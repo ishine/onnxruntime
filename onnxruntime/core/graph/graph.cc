@@ -1088,10 +1088,10 @@ Status Graph::PerformTopologicalSortAndCheckIsAcyclic() {
                 });
 
   // start at the bottom and work our way up the graph
-  for (auto iter = Nodes().begin(); iter != Nodes().end(); ++iter) {
-    if (iter->relationships_.output_edges.empty()) {
+  for (auto& iter : Nodes()) {
+    if (iter.relationships_.output_edges.empty()) {
       // This is a leaf node.
-      stack.push(iter->Index());
+      stack.push(iter.Index());
     }
   }
 
@@ -2150,7 +2150,7 @@ ONNX_NAMESPACE::GraphProto Graph::ToGraphProto() const {
   GraphProto result;
   ToGraphProtoInternal(result);
 
-  for (auto initializer : GetAllInitializedTensors()) {
+  for (const auto& initializer : GetAllInitializedTensors()) {
     *result.add_initializer() = *initializer.second;
   }
 

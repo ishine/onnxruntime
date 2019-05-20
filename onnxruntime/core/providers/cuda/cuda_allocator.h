@@ -12,10 +12,10 @@ constexpr const char* CUDA_PINNED = "CudaPinned";
 class CUDAAllocator : public IDeviceAllocator {
  public:
   CUDAAllocator(int device_id) : device_id_(device_id), info_(CUDA, OrtAllocatorType::OrtDeviceAllocator, device_id, OrtMemTypeDefault) {}
-  virtual void* Alloc(size_t size) override;
-  virtual void Free(void* p) override;
-  virtual const OrtAllocatorInfo& Info() const override;
-  virtual FencePtr CreateFence(const SessionState* session_state) override;
+  void* Alloc(size_t size) override;
+  void Free(void* p) override;
+  const OrtAllocatorInfo& Info() const override;
+  FencePtr CreateFence(const SessionState* session_state) override;
 
  private:
   void CheckDevice() const;
@@ -28,10 +28,10 @@ class CUDAAllocator : public IDeviceAllocator {
 //TODO: add a default constructor
 class CUDAPinnedAllocator : public IDeviceAllocator {
  public:
-  virtual void* Alloc(size_t size) override;
-  virtual void Free(void* p) override;
-  virtual const OrtAllocatorInfo& Info() const override;
-  virtual FencePtr CreateFence(const SessionState* session_state) override;
+  void* Alloc(size_t size) override;
+  void Free(void* p) override;
+  const OrtAllocatorInfo& Info() const override;
+  FencePtr CreateFence(const SessionState* session_state) override;
 };
 
 }  // namespace onnxruntime

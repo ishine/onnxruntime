@@ -357,7 +357,7 @@ void tanh_m(const float* ps1, float* ps1_c, const float* ps2, float* pd, int c,
   }
 }
 
-void relu_m(const float* ps1, float* ps1_c, const float* ps2, float* pd, int c, float alpha, float beta) {
+void relu_m(const float* ps1, float* ps1_c, const float* ps2, float* pd, int c, float alpha, float beta) {  // NOLINT
   ORT_UNUSED_PARAMETER(ps1_c);
   ORT_UNUSED_PARAMETER(alpha);
   ORT_UNUSED_PARAMETER(beta);
@@ -527,7 +527,7 @@ void gru_reset_gate_sigmoid(const float* ps1, float* ps2, float* pd, int c, floa
   }
 }
 
-void gru_reset_gate_relu(const float* ps1, float* ps2, float* pd, int c, float alpha, float beta) {
+void gru_reset_gate_relu(const float* ps1, float* ps2, float* pd, int c, float alpha, float beta) {  // NOLINT
   ORT_UNUSED_PARAMETER(alpha);
   ORT_UNUSED_PARAMETER(beta);
 
@@ -567,7 +567,8 @@ void gru_output_gate_tanh(float* ph, const float* pz, const float* ps, float* po
   }
 }
 
-void gru_output_gate_relu(float* ph, const float* pz, const float* ps, float* po, int c, float alpha, float beta) {
+void gru_output_gate_relu(float* ph, const float* pz, const float* ps, float* po, int c, float alpha,
+                          float beta) {  // NOLINT
   ORT_UNUSED_PARAMETER(alpha);
   ORT_UNUSED_PARAMETER(beta);
 

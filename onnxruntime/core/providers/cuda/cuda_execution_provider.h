@@ -28,7 +28,7 @@ enum CUDAStreamType : int {
 class CUDAExecutionProvider : public IExecutionProvider {
  public:
   explicit CUDAExecutionProvider(const CUDAExecutionProviderInfo& info);
-  virtual ~CUDAExecutionProvider();
+  ~CUDAExecutionProvider() override;
 
   AllocatorPtr GetAllocator(int id, OrtMemType mem_type = OrtMemTypeDefault) const override;
 
@@ -85,11 +85,12 @@ class CUDAExecutionProvider : public IExecutionProvider {
     return IAllocator::MakeUniquePtr<T>(GetAllocator(OrtMemTypeDefault), count_or_bytes);
   }
 
-  virtual std::shared_ptr<KernelRegistry> GetKernelRegistry() const override;
+  std::shared_ptr<KernelRegistry> GetKernelRegistry() const override;
 
-  virtual std::vector<std::unique_ptr<ComputeCapability>>
-  GetCapability(const onnxruntime::GraphViewer& graph,
-                const std::vector<const KernelRegistry*>& kernel_registries) const override;
+  std::vector<std::unique_ptr<ComputeCapability>> GetCapability(
+      const onnxruntime::GraphViewer& graph,
+      const std::vector<const KernelRegistry*>& kernel_registries) const override;
+
  private:
   cudaStream_t streams_[kTotalCudaStreams];
   int device_id_;
@@ -125,19 +126,20 @@ class CUDAExecutionProvider : public IExecutionProvider {
           constant_ones_float_ = cuda::CreateConstantOnes<float>();
         }
         return reinterpret_cast<const T*>(constant_ones_float_->GetBuffer(count));
-      } else if (std::is_same<T, double>::value) {
+      }
+      if (std::is_same<T, double>::value) {
         if (!constant_ones_double_) {
           constant_ones_double_ = cuda::CreateConstantOnes<double>();
         }
         return reinterpret_cast<const T*>(constant_ones_double_->GetBuffer(count));
-      } else if (std::is_same<T, half>::value) {
+      }
+      if (std::is_same<T, half>::value) {
         if (!constant_ones_half_) {
           constant_ones_half_ = cuda::CreateConstantOnes<half>();
         }
         return reinterpret_cast<const T*>(constant_ones_half_->GetBuffer(count));
-      } else {
-        return nullptr;
       }
+        return nullptr;
     }
 
    private:
@@ -170,7 +172,8 @@ class CUDAExecutionProvider : public IExecutionProvider {
 
   void ReleasePerThreadStuffs() const;
 
-  bool RNNNeedFallbackToCPU(const onnxruntime::Node& node, const std::vector<std::string> activations_supported, const std::string& op_type) const;
+  bool RNNNeedFallbackToCPU(const onnxruntime::Node& node, std::vector<std::string> activations_supported,
+                            const std::string& op_type) const;
   bool ConvNeedFallbackToCPU(const onnxruntime::Node& node) const;
 };
 

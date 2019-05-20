@@ -822,7 +822,7 @@ of [N, 0] then [N, 0].
         ONNX_NAMESPACE::TensorShapeProto output_shape;
         auto& input_shape = getInputShape(ctx, 0);
         auto& dims = input_shape.dim();
-        if (dims.size() < 1 || dims.size() > 2) {
+        if (dims.empty() || dims.size() > 2) {
           fail_shape_inference("Input dimensions are either [C] or [N][C] allowed");
         }
 
@@ -877,26 +877,24 @@ with the exception that numpy default keepdims to False instead of True.)DOC")
   ONNX_CONTRIB_OPERATOR_SCHEMA(MurmurHash3)
       .SetDomain(kMSDomain)
       .SinceVersion(1)
-      .SetDoc(R"DOC(The underlying implementation is MurmurHash3_x86_32 generating low latency 32bits hash suitable for implementing lookup tables, Bloom filters, count min sketch or feature hashing.)DOC")
+      .SetDoc(
+          R"DOC(The underlying implementation is MurmurHash3_x86_32 generating low latency 32bits hash suitable for implementing lookup tables, Bloom filters, count min sketch or feature hashing.)DOC")
       .Input(0, "X", "An input tensor to hash.", "T1")
       .Output(0, "Y", "32-bit hash value.", "T2")
-      .TypeConstraint("T1", {"tensor(uint32)", "tensor(int32)", "tensor(string)"}, "Constrain input type to unsigned or signed 32-bit integer tensor, or string tensor. It should be utf-8 encoded if using unicode.")
-      .TypeConstraint("T2", {"tensor(uint32)", "tensor(int32)"}, "Constrain output type to unsigned and signed 32-bit integer tensor.")
-      .Attr(
-          "seed",
-          "Seed for the hashing algorithm, unsigned 32-bit integer, default to 0.",
-          AttributeProto::INT,
-          (int64_t)0LL)
-      .Attr(
-          "positive",
-          "If value is 1, output type is uint32_t, else int32_t. Default value is 1.",
-          AttributeProto::INT,
-          (int64_t)1LL)
+      .TypeConstraint("T1", {"tensor(uint32)", "tensor(int32)", "tensor(string)"},
+                      "Constrain input type to unsigned or signed 32-bit integer tensor, or string tensor. It should "
+                      "be utf-8 encoded if using unicode.")
+      .TypeConstraint("T2", {"tensor(uint32)", "tensor(int32)"},
+                      "Constrain output type to unsigned and signed 32-bit integer tensor.")
+      .Attr("seed", "Seed for the hashing algorithm, unsigned 32-bit integer, default to 0.", AttributeProto::INT,
+            static_cast<int64_t>(0LL))
+      .Attr("positive", "If value is 1, output type is uint32_t, else int32_t. Default value is 1.",
+            AttributeProto::INT, static_cast<int64_t>(1LL))
       .TypeAndShapeInferenceFunction([](ONNX_NAMESPACE::InferenceContext& ctx) {
         // type inference
         auto positive_attr = ctx.getAttribute("positive");
-        bool is_positive =
-            positive_attr ? (static_cast<int>(positive_attr->i()) == 1 ? true : false) : true /* default value if attribute not present */;
+        bool is_positive = positive_attr ? (static_cast<int>(positive_attr->i()) == 1)
+                                         : true /* default value if attribute not present */;
         auto output_data_type = ctx.getOutputType(0)->mutable_tensor_type();
         if (is_positive) {
           output_data_type->set_elem_type(::ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT32);
@@ -1016,35 +1014,28 @@ Example 4:
   ONNX_CONTRIB_OPERATOR_SCHEMA(Pad)
       .SetDomain(kMSDomain)
       .SinceVersion(1)
-      .Attr(
-          "mode",
-          "Three modes: `constant`(default) - pads with a given constant value, "
-          "`reflect` - pads with the reflection of the vector mirrored on the first and last values of the vector along each axis, "
-          "`edge` - pads with the edge values of array",
-          AttributeProto::STRING,
-          std::string("constant"))
+      .Attr("mode",
+            "Three modes: `constant`(default) - pads with a given constant value, "
+            "`reflect` - pads with the reflection of the vector mirrored on the first and last values of the vector "
+            "along each axis, "
+            "`edge` - pads with the edge values of array",
+            AttributeProto::STRING, std::string("constant"))
       .Input(0, "data", "Input tensor.", "T")
-      .Input(
-          1,
-          "pads",
-          "Tensor of integers indicating the number of padding elements to add or remove (if negative) "
-          "at the beginning and end of each axis. For 2D input tensor, it is the number of pixels. "
-          "`pads` should be a 1D tensor of shape [2 * input_rank] or a 2D tensor of shape [1, 2 * input_rank]. "
-          "`pads` format (1D example) should be as follow [x1_begin, x2_begin,...,x1_end, x2_end,...], "
-          "where xi_begin is the number of pixels added at the beginning of axis `i` and "
-          "xi_end, the number of pixels added at the end of axis `i`.",
-          "tensor(int64)")
-      .Input(
-          2,
-          "value",
-          "(Optional) A scalar or rank 1 tensor containing a single value to be filled if the mode chosen is `constant` (by default it is 0.0).",
-          "T",
-          OpSchema::Optional)
+      .Input(1, "pads",
+             "Tensor of integers indicating the number of padding elements to add or remove (if negative) "
+             "at the beginning and end of each axis. For 2D input tensor, it is the number of pixels. "
+             "`pads` should be a 1D tensor of shape [2 * input_rank] or a 2D tensor of shape [1, 2 * input_rank]. "
+             "`pads` format (1D example) should be as follow [x1_begin, x2_begin,...,x1_end, x2_end,...], "
+             "where xi_begin is the number of pixels added at the beginning of axis `i` and "
+             "xi_end, the number of pixels added at the end of axis `i`.",
+             "tensor(int64)")
+      .Input(2, "value",
+             "(Optional) A scalar or rank 1 tensor containing a single value to be filled if the mode chosen is "
+             "`constant` (by default it is 0.0).",
+             "T", OpSchema::Optional)
       .Output(0, "output", "Tensor after padding.", "T")
-      .TypeConstraint(
-          "T",
-          {"tensor(float16)", "tensor(float)", "tensor(double)"},
-          "Constrain input and output types to float tensors.")
+      .TypeConstraint("T", {"tensor(float16)", "tensor(float)", "tensor(double)"},
+                      "Constrain input and output types to float tensors.")
       .TypeAndShapeInferenceFunction([](ONNX_NAMESPACE::InferenceContext& ctx) {
         // Type inference
         propagateElemTypeFromInputToOutput(ctx, 0, 0);
@@ -1059,10 +1050,8 @@ Example 4:
         const auto* pads_initializer = ctx.getInputData(1);
         if (nullptr != pads_initializer) {
           const auto& pads_shape = ctx.getInputType(1)->tensor_type().shape();
-          if ((pads_initializer->dims_size() != 1 &&
-               pads_initializer->dims_size() != 2) ||
-              (pads_initializer->dims_size() == 2 &&
-               pads_shape.dim((int)0).dim_value() != 1) ||
+          if ((pads_initializer->dims_size() != 1 && pads_initializer->dims_size() != 2) ||
+              (pads_initializer->dims_size() == 2 && pads_shape.dim(0).dim_value() != 1) ||
               pads_initializer->data_type() != ONNX_NAMESPACE::TensorProto::INT64)
             fail_shape_inference(
                 "'pads' input must be a 1D (shape: [input_rank]) "
@@ -1073,11 +1062,9 @@ Example 4:
           std::vector<int64_t> pads_data;
           if (pads_initializer->has_raw_data())
             return;
-          else
-            pads_data.insert(
-                pads_data.end(),
-                pads_initializer->int64_data().begin(),
-                pads_initializer->int64_data().end());
+
+          pads_data.insert(pads_data.end(), pads_initializer->int64_data().begin(),
+                           pads_initializer->int64_data().end());
 
           // fill with zeros if needed to reach appropriate size
           if (pads_data.size() != static_cast<size_t>(2 * input_rank))
@@ -1085,8 +1072,8 @@ Example 4:
 
           const auto& output_shape =
               ctx.getOutputType(0)->mutable_tensor_type()->mutable_shape();
-          for (size_t i = 0; (int64_t)i < input_rank; ++i) {
-            const auto& input_dim = input_shape.dim((int)i);
+          for (size_t i = 0; static_cast<int64_t>(i) < input_rank; ++i) {
+            const auto& input_dim = input_shape.dim(static_cast<int>(i));
             auto* output_dim = output_shape->add_dim();
             if (input_dim.has_dim_value()) {
               output_dim->set_dim_value(
@@ -1098,11 +1085,10 @@ Example 4:
         } else {
           // Infer ouput shapes' rank in any case
           auto* output_shape_0 = getOutputShape(ctx, 0);
-          for (size_t i = 0; (int64_t)i < input_rank; ++i) {
+          for (size_t i = 0; static_cast<int64_t>(i) < input_rank; ++i) {
             output_shape_0->add_dim();
           }
         }
-        return;
       })
       .SetDoc(R"DOC(
             Given `data` tensor, pads, mode, and value.
@@ -1170,8 +1156,6 @@ Example 4:
 
         // 'idx' output has same shape as input
         ONNX_NAMESPACE::propagateShapeFromInputToOutput(ctx, 0, 1);
-
-        return;
       })
       .SetDoc(R"DOC(
               Finds all the unique values (deduped list) present in the given input tensor. 

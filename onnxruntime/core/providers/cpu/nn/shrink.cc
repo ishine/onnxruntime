@@ -24,9 +24,8 @@ inline T ShrinkCore(const T& val, float bias, float lambd) {
   }
   if (val > lambd) {
     return T(val - bias);
-  } else {
-    return T(0);
   }
+    return T(0);
 }
 
 template <class T>

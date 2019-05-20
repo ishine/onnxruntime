@@ -122,9 +122,8 @@ AllocatorPtr CUDAExecutionProvider::GetAllocator(int id, OrtMemType mem_type) co
       }
     }
     return per_thread_default_allocator_;
-  } else {
-    return IExecutionProvider::GetAllocator(id, mem_type);
   }
+    return IExecutionProvider::GetAllocator(id, mem_type);
 }
 
 Status CUDAExecutionProvider::Sync() const {
@@ -908,7 +907,7 @@ bool CUDAExecutionProvider::ConvNeedFallbackToCPU(const onnxruntime::Node& node)
 
     //cudnn only supports symmetric padding
     if ("pads" == attr_name && ::ONNX_NAMESPACE::AttributeProto_AttributeType::AttributeProto_AttributeType_INTS == attr_value.type()) {
-      auto pads = attr_value.ints();
+      const auto& pads = attr_value.ints();
       int pads_size = pads.size();
       ORT_ENFORCE(pads_size % 2 == 0);
       int rank = pads_size / 2;
