@@ -20,7 +20,7 @@ class DummyGraphTransformer : public GraphTransformer {
  private:
   mutable bool transformer_invoked_;
 
-  Status ApplyImpl(Graph& /*graph*/, bool& /*modified*/, int /*graph_level*/) const override {
+  Status ApplyImpl(Graph& /*graph*/, bool& /*modified*/, int /*graph_level*/, const logging::Logger&) const override {
     transformer_invoked_ = true;
     return Status::OK();
   }
@@ -41,13 +41,14 @@ class DummyRewriteRule : public RewriteRule {
   }
 
  private:
-  bool rewrite_rule_invoked_;
+  mutable bool rewrite_rule_invoked_;
 
-  bool SatisfyCondition(const Graph& /*graph*/, const Node& /*node*/) override {
+  bool SatisfyCondition(const Graph& /*graph*/, const Node& /*node*/, const logging::Logger& /*logger*/) const override {
     return true;
   }
 
-  Status Apply(Graph& /*graph*/, Node& /*node*/, RewriteRuleEffect& /*rule_effect*/) override {
+  Status Apply(Graph& /*graph*/, Node& /*node*/, RewriteRuleEffect& /*rule_effect*/,
+      const logging::Logger& /*logger*/) const override {
     rewrite_rule_invoked_ = true;
     return Status::OK();
   }

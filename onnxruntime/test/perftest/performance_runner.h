@@ -10,6 +10,7 @@
 #include <mutex>
 #include <iostream>
 #include <random>
+#include <chrono>
 // onnxruntime dependencies
 #include <core/common/common.h>
 #include <core/common/status.h>
@@ -27,6 +28,8 @@ namespace onnxruntime {
 namespace perftest {
 
 struct PerformanceResult {
+  std::chrono::time_point<std::chrono::high_resolution_clock> start_;
+  std::chrono::time_point<std::chrono::high_resolution_clock> end_;
   size_t peak_workingset_size{0};
   short average_CPU_usage{0};
   double total_time_cost{0};
@@ -58,13 +61,18 @@ struct PerformanceResult {
       std::sort(sorted_time.begin(), sorted_time.end());
 
       outfile << std::endl;
-      outfile << "Min Latency is " << sorted_time[0] << "sec" << std::endl;
-      outfile << "Max Latency is " << sorted_time[total - 1] << "sec" << std::endl;
-      outfile << "P50 Latency is " << sorted_time[n50] << "sec" << std::endl;
-      outfile << "P90 Latency is " << sorted_time[n90] << "sec" << std::endl;
-      outfile << "P95 Latency is " << sorted_time[n95] << "sec" << std::endl;
-      outfile << "P99 Latency is " << sorted_time[n99] << "sec" << std::endl;
-      outfile << "P999 Latency is " << sorted_time[n999] << "sec" << std::endl;
+      auto output_stats = [&](std::ostream& ostream) {
+        ostream << "Min Latency is " << sorted_time[0] << "sec" << std::endl;
+        ostream << "Max Latency is " << sorted_time[total - 1] << "sec" << std::endl;
+        ostream << "P50 Latency is " << sorted_time[n50] << "sec" << std::endl;
+        ostream << "P90 Latency is " << sorted_time[n90] << "sec" << std::endl;
+        ostream << "P95 Latency is " << sorted_time[n95] << "sec" << std::endl;
+        ostream << "P99 Latency is " << sorted_time[n99] << "sec" << std::endl;
+        ostream << "P999 Latency is " << sorted_time[n999] << "sec" << std::endl;
+      };
+
+      output_stats(outfile);
+      output_stats(std::cout);
     }
 
     outfile.close();
@@ -73,7 +81,7 @@ struct PerformanceResult {
 
 class PerformanceRunner {
  public:
-  PerformanceRunner(OrtEnv* env, const PerformanceTestConfig& test_config, std::random_device& rd);
+  PerformanceRunner(Ort::Env& env, const PerformanceTestConfig& test_config, std::random_device& rd);
 
   ~PerformanceRunner();
   Status Run();
@@ -91,7 +99,14 @@ class PerformanceRunner {
 
   template <bool isWarmup>
   Status RunOneIteration() {
-    std::chrono::duration<double> duration_seconds = session_->Run();
+    std::chrono::duration<double> duration_seconds;
+
+    try {
+      duration_seconds = session_->Run();
+    } catch (const std::exception& ex) {
+      return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "PerformanceRunner::RunOneIteration caught exception: ", ex.what());
+    }
+
     if (!isWarmup) {
       std::lock_guard<std::mutex> guard(results_mutex_);
       performance_result_.time_costs.emplace_back(duration_seconds.count());
@@ -124,11 +139,13 @@ class PerformanceRunner {
   }
 
  private:
+  std::chrono::time_point<std::chrono::high_resolution_clock> session_create_start_;
+  std::chrono::time_point<std::chrono::high_resolution_clock> session_create_end_;
   PerformanceResult performance_result_;
   PerformanceTestConfig performance_test_config_;
   TestModelInfo* test_model_info_;
   std::unique_ptr<TestSession> session_;
-  HeapBuffer b_;
+  onnxruntime::test::HeapBuffer b_;
   std::unique_ptr<ITestCase> test_case_;
 
   // TODO: Convert to OrtMutex

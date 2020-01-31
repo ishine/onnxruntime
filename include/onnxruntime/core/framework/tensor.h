@@ -3,19 +3,20 @@
 
 #pragma once
 
+#include <stddef.h>
 #include <iostream>
 #include <string>
 #include <vector>
 
-#include "gsl/span"
+#include "gsl/gsl"
 #include "core/common/common.h"
 #include "core/framework/allocator.h"
-#include "core/framework/data_types.h"
 #include "core/framework/tensor_shape.h"
 #include "onnxruntime_config.h"
+#include "core/framework/data_types.h"
+#include "core/framework/data_types_internal.h"
 
 namespace onnxruntime {
-
 // TODO: Do we need this class or is IAllocator::MakeUniquePtr sufficient/better
 class BufferDeleter {
  public:
@@ -57,6 +58,8 @@ using BufferNakedPtr = void*;
 */
 class Tensor final {
  public:
+  Tensor() = default;  // to allow creating vector<Tensor> to support seq(tensor)
+
   /**
    * Create tensor with given type, shape, pre-allocate memory and allocator info.
    * This function won't check if the preallocated buffer(p_data) has enough room for the shape.
@@ -64,28 +67,48 @@ class Tensor final {
    *              Tensor does not own the data and will not delete it
    * \param alloc Where the buffer('data') was allocated from
    */
-  Tensor(MLDataType p_type, const TensorShape& shape, void* p_data, const OrtAllocatorInfo& alloc,
-         int64_t offset = 0);
+  Tensor(MLDataType p_type, const TensorShape& shape, void* p_data, const OrtMemoryInfo& alloc,
+         ptrdiff_t offset = 0);
 
   /**
    * Deprecated. The orginal design is this Tensor class won't do any allocation / release.
    * However, this function will allocate the buffer for the shape, and do placement new if p_type is string tensor.
    */
-  Tensor(MLDataType p_type, const TensorShape& shape, std::shared_ptr<IAllocator> allocator, int64_t offset = 0);
+  Tensor(MLDataType p_type, const TensorShape& shape, std::shared_ptr<IAllocator> allocator, ptrdiff_t offset = 0);
 
   ~Tensor();
 
   //Move is allowed
   ORT_DISALLOW_COPY_AND_ASSIGNMENT(Tensor);
 
-  Tensor(Tensor&& other);
+  Tensor(Tensor&& other) noexcept;
 
-  Tensor& operator=(Tensor&& other);
+  Tensor& operator=(Tensor&& other) noexcept;
 
   /**
      Returns the data type.
   */
   MLDataType DataType() const { return dtype_; }
+
+  /**
+     Returns the data type enum constant
+     @remarks Use utils::ToTensorProtoElementType<T> for comparison.
+  */
+  int32_t GetElementType() const {
+    return dtype_->GetDataType();
+  }
+
+  // Check if contains string data. This is a separate
+  // interface bc it is frequently used.
+  bool IsDataTypeString() const {
+    return utils::IsPrimitiveDataType<std::string>(dtype_);
+  }
+
+  // Checks if the Tensor contains data type T
+  template <class T>
+  bool IsDataType() const {
+    return utils::IsPrimitiveDataType<T>(dtype_);
+  }
 
   /**
      Returns the shape of the tensor.
@@ -95,7 +118,7 @@ class Tensor final {
   /**
      Returns the location of the tensor's memory
   */
-  const OrtAllocatorInfo& Location() const { return alloc_info_; }
+  const OrtMemoryInfo& Location() const { return alloc_info_; }
 
   /**
      May return nullptr if tensor size is zero
@@ -103,8 +126,8 @@ class Tensor final {
   template <typename T>
   T* MutableData() {
     // Type check
-    ORT_ENFORCE(DataTypeImpl::GetType<T>() == dtype_, "Tensor type mismatch. ",
-                DataTypeImpl::GetType<T>(), "!=", dtype_);
+    ORT_ENFORCE(utils::IsPrimitiveDataType<T>(dtype_), "Tensor type mismatch. ",
+                "T ", "!=", dtype_);
     return reinterpret_cast<T*>(static_cast<char*>(p_data_) + byte_offset_);
   }
 
@@ -114,25 +137,25 @@ class Tensor final {
   template <typename T>
   gsl::span<T> MutableDataAsSpan() {
     // Type check
-    ORT_ENFORCE(DataTypeImpl::GetType<T>() == dtype_, "Tensor type mismatch. ",
-                DataTypeImpl::GetType<T>(), "!=", dtype_);
+    ORT_ENFORCE(utils::IsPrimitiveDataType<T>(dtype_), "Tensor type mismatch. ",
+                "T ", "!=", dtype_);
     T* data = reinterpret_cast<T*>(static_cast<char*>(p_data_) + byte_offset_);
-    return gsl::make_span(data, shape_.Size());
+    return gsl::make_span(data, static_cast<size_t>(shape_.Size()));
   }
 
   template <typename T>
   const T* Data() const {
     // Type check
-    ORT_ENFORCE(DataTypeImpl::GetType<T>() == dtype_, "Tensor type mismatch. ",
-                DataTypeImpl::GetType<T>(), "!=", dtype_);
+    ORT_ENFORCE(utils::IsPrimitiveDataType<T>(dtype_), "Tensor type mismatch. ",
+                "T ", "!=", dtype_);
     return reinterpret_cast<const T*>(static_cast<char*>(p_data_) + byte_offset_);
   }
 
   template <typename T>
   gsl::span<const T> DataAsSpan() const {
     // Type check
-    ORT_ENFORCE(DataTypeImpl::GetType<T>() == dtype_, "Tensor type mismatch. ",
-                DataTypeImpl::GetType<T>(), "!=", dtype_);
+    ORT_ENFORCE(utils::IsPrimitiveDataType<T>(dtype_), "Tensor type mismatch. ",
+                "T ", "!=", dtype_);
     const T* data = reinterpret_cast<const T*>(static_cast<char*>(p_data_) + byte_offset_);
     return gsl::make_span(data, shape_.Size());
   }
@@ -170,17 +193,7 @@ class Tensor final {
   /**
   The number of bytes of data.
   */
-  size_t Size() const {
-    size_t ret;
-    int64_t l = shape_.Size();
-    if (l >= static_cast<int64_t>(std::numeric_limits<ptrdiff_t>::max())) {
-      ORT_THROW("tensor size overflow");
-    }
-    if (!IAllocator::CalcMemSizeForArray(static_cast<size_t>(shape_.Size()), dtype_->Size(), &ret)) {
-      ORT_THROW("tensor size overflow");
-    }
-    return ret;
-  }
+  size_t SizeInBytes() const;
 
   // More API methods.
  private:
@@ -188,7 +201,7 @@ class Tensor final {
             const TensorShape& shape,
             void* p_raw_data,
             AllocatorPtr deleter,
-            int64_t offset = 0);
+            ptrdiff_t offset = 0);
 
   void ReleaseBuffer();
 
@@ -201,9 +214,9 @@ class Tensor final {
   AllocatorPtr buffer_deleter_;
 
   TensorShape shape_;
-  MLDataType dtype_;
-  OrtAllocatorInfo alloc_info_;
-  int64_t byte_offset_;
+  const PrimitiveDataTypeBase* dtype_;
+  OrtMemoryInfo alloc_info_;
+  ptrdiff_t byte_offset_;
 };
 #ifdef __GNUC__
 #pragma GCC diagnostic pop

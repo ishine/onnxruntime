@@ -1,48 +1,52 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+#include "onnxruntime_config.h"
+//Ignore a wired warning in gcc 7.4.0. The latest gcc doesn't generate this warning
+#ifdef __GNUC__
+#ifdef HAS_MAYBE_UNINITIALIZED
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+#endif
 #include "core/providers/cpu/math/softmax.h"
 
 #include "core/framework/op_kernel.h"
+#include "core/framework/op_kernel_context_internal.h"
 #include "core/providers/common.h"
-#include "core/providers/cpu/math/softmax_shared.h"
 #include "core/util/math.h"
+#include "core/util/eigen_common_wrapper.h"
 
 namespace onnxruntime {
 
-template <>
-Status Softmax<float>::Compute(OpKernelContext* ctx) const {
-  const auto* tensor_pointer = ctx->Input<Tensor>(0);
-  if (tensor_pointer == nullptr) return Status(common::ONNXRUNTIME, common::FAIL, "input count mismatch");
-  const Tensor& X = *tensor_pointer;
-  const TensorShape& input_shape{X.Shape()};
+ONNX_CPU_OPERATOR_VERSIONED_TYPED_KERNEL(Softmax, 1, 10, float,
+                                         KernelDefBuilder().TypeConstraint("T", DataTypeImpl::GetTensorType<float>()),
+                                         Softmax<float, false>);
 
-  VLOGS(ctx->Logger(), 2) << "Input tensor shape: " << input_shape;
+// Opset 11 starts to support Neg Axis.
+ONNX_CPU_OPERATOR_TYPED_KERNEL(Softmax, 11, float, KernelDefBuilder().TypeConstraint("T", DataTypeImpl::GetTensorType<float>()),
+                               Softmax<float, false>);
 
-  Tensor* Y = ctx->Output(0, input_shape);
+ONNX_CPU_OPERATOR_VERSIONED_TYPED_KERNEL(LogSoftmax, 1, 10, float,
+                                         KernelDefBuilder().TypeConstraint("T", DataTypeImpl::GetTensorType<float>()),
+                                         Softmax<float, true>);
 
-  const int64_t axis = HandleNegativeAxis(axis_, input_shape.NumDimensions());
+// Opset 11 starts to support Neg Axis.
+ONNX_CPU_OPERATOR_TYPED_KERNEL(LogSoftmax, 11, float, KernelDefBuilder().TypeConstraint("T", DataTypeImpl::GetTensorType<float>()),
+                               Softmax<float, true>);
 
-  size_t N = input_shape.SizeToDimension(axis);
-  size_t D = input_shape.SizeFromDimension(axis);
+ONNX_CPU_OPERATOR_VERSIONED_TYPED_KERNEL(Softmax, 1, 10, double,
+                                         KernelDefBuilder().TypeConstraint("T", DataTypeImpl::GetTensorType<double>()),
+                                         Softmax<double, false>);
 
-  auto* Ydata = Y->template MutableData<float>();
+// Opset 11 starts to support Neg Axis.
+ONNX_CPU_OPERATOR_TYPED_KERNEL(Softmax, 11, double, KernelDefBuilder().TypeConstraint("T", DataTypeImpl::GetTensorType<double>()),
+                               Softmax<double, false>);
 
-  std::vector<float> scale_(N);
-  std::vector<float> rowmax_(N);
-  std::vector<float> sum_multiplier_(D, 1.f);  // initialize all multiplier values to 1.0
+ONNX_CPU_OPERATOR_VERSIONED_TYPED_KERNEL(LogSoftmax, 1, 10, double,
+                                         KernelDefBuilder().TypeConstraint("T", DataTypeImpl::GetTensorType<double>()),
+                                         Softmax<double, true>);
 
-  const bool logarithmic = false;
-  auto status = SoftmaxCPU(N, D, X.template Data<float>(), Ydata,
-                           scale_.data(), sum_multiplier_.data(), logarithmic, rowmax_.data());
-
-  return status;
-}
-
-ONNX_CPU_OPERATOR_KERNEL(
-    Softmax,
-    1,
-    KernelDefBuilder().TypeConstraint("T", DataTypeImpl::GetTensorType<float>()),
-    Softmax<float>);
-
+// Opset 11 starts to support Neg Axis.
+ONNX_CPU_OPERATOR_TYPED_KERNEL(LogSoftmax, 11, double, KernelDefBuilder().TypeConstraint("T", DataTypeImpl::GetTensorType<double>()),
+                               Softmax<double, true>);
 }  // namespace onnxruntime
