@@ -6,13 +6,14 @@
 namespace Dml
 {
 
-class DmlOperatorMaxUnpool : public DmlOperator
+class DmlOperatorMaxUnpool : public DmlOperator, public UnpoolingHelper
 {
 public:
     using Self = DmlOperatorMaxUnpool;
 
     DmlOperatorMaxUnpool(const MLOperatorKernelCreationContext& kernelCreationContext)
-    :   DmlOperator(kernelCreationContext)
+    :   DmlOperator(kernelCreationContext),
+        UnpoolingHelper(kernelCreationContext, kernelCreationContext.GetTensorShapeDescription())
     {
         uint32_t inputCount = kernelCreationContext.GetInputCount();
         ML_CHECK_VALID_ARGUMENT(inputCount == 2 || inputCount == 3, "MaxUnpool expects 2 or 3 inputs.");
@@ -21,6 +22,7 @@ public:
         std::vector<std::optional<uint32_t>> inputIndices = { 0, 1 }; // The 3rd tensor ('output_shape') is not bound, just 'X' and 'I' indices.
         std::vector<std::optional<uint32_t>> outputIndices = { 0 };
         DmlOperator::Initialize(kernelCreationContext, inputIndices, outputIndices);
+        m_inputTensorDescs[1].ForceUnsignedDataType(); // MaxUnpool accepts uint32_t.
 
         std::vector<DML_TENSOR_DESC> inputDescs = GetDmlInputDescs();
         std::vector<DML_TENSOR_DESC> outputDescs = GetDmlOutputDescs();
@@ -32,10 +34,10 @@ public:
         poolingDesc.IndicesTensor = &inputDescs[1];
         poolingDesc.OutputTensor = outputDescs.data();
 
-        DML_OPERATOR_DESC operaterDesc = {};
-        operaterDesc.Type = DML_OPERATOR_MAX_UNPOOLING;
-        operaterDesc.Desc = &poolingDesc;
-        SetDmlOperatorDesc(operaterDesc, kernelCreationContext);
+        DML_OPERATOR_DESC operatorDesc = {};
+        operatorDesc.Type = DML_OPERATOR_MAX_UNPOOLING;
+        operatorDesc.Desc = &poolingDesc;
+        SetDmlOperatorDesc(operatorDesc, kernelCreationContext);
     }
 };
 

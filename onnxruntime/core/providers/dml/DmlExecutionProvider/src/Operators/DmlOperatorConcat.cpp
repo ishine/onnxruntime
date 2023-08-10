@@ -42,7 +42,7 @@ public:
             for (size_t i = 0; i < m_inputTensorDescs.size(); i++)
             {
                 // DML doesn't support empty tensors for concat, so we ignore them
-                if (!OperatorHelper::ContainsEmptyDimensions(m_inputTensorDescs[i].GetDmlSizes()))
+                if (!OperatorHelper::ContainsEmptyDimensions(m_inputTensorDescs[i].GetSizes()))
                 {
                     inputDescs.push_back(m_inputTensorDescs[i].GetDmlDesc());
                 }
@@ -69,7 +69,7 @@ public:
 
         if (!inputTensors.empty())
         {
-            THROW_IF_FAILED(m_executionProvider->ExecuteOperator(
+            ORT_THROW_IF_FAILED(m_executionProvider->ExecuteOperator(
                 m_compiledOperator.Get(),
                 m_persistentResourceBinding ? &*m_persistentResourceBinding : nullptr,
                 gsl::make_span(inputTensors),

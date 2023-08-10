@@ -2,23 +2,33 @@
 // Licensed under the MIT License.
 
 #include "string_normalizer.h"
-#include "onnx/defs/schema.h"
 #include "core/common/common.h"
 #include "core/framework/tensor.h"
+#include "onnxruntime_config.h"
 
 #ifdef _MSC_VER
 #include <codecvt>
 #include <locale.h>
-#elif defined (__APPLE__) or defined (__ANDROID__)
+#elif defined(__APPLE__) || defined(__ANDROID__)
 #include <codecvt>
 #else
 #include <limits>
 #include <iconv.h>
+
 #endif  // _MSC_VER
 
 #include <locale>
 #include <functional>
 #include <unordered_set>
+
+#if defined(__GNUC__)
+// Allow deprecated-declarations warning - std::wstring_convert is deprecated.
+// TODO find a suitable replacement
+// Note: GNU libiconv (e.g., on Apple platforms) is not suitable due to its LGPL license.
+#if defined(HAS_DEPRECATED_DECLARATIONS)
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
+#endif  // defined(HAS_DEPRECATED_DECLARATIONS)
+#endif  // defined(__GNUC__)
 
 namespace onnxruntime {
 
@@ -26,7 +36,7 @@ ONNX_CPU_OPERATOR_KERNEL(
     StringNormalizer,
     10,
     KernelDefBuilder()
-        .TypeConstraint("T", DataTypeImpl::GetTensorType<std::string>()),
+        .TypeConstraint("X", DataTypeImpl::GetTensorType<std::string>()),
     StringNormalizer);
 
 namespace string_normalizer {
@@ -77,14 +87,20 @@ using Utf8Converter = std::wstring_convert<std::codecvt_utf8<wchar_t>>;
 
 const std::string default_locale("en-US");
 
-#else // MS_VER
+#else  // _MSC_VER
 
 class Locale {
  public:
-  explicit Locale(const std::string& name) try : loc_(name.c_str()) {
-  } catch (const std::runtime_error& e) {
-    ORT_THROW("Failed to construct locale with name:",
-              name, ":", e.what(), ":Please, install necessary language-pack-XX and configure locales");
+  explicit Locale(const std::string& name) {
+    ORT_TRY {
+      loc_ = std::locale(name.c_str());
+    }
+    ORT_CATCH(const std::runtime_error& e) {
+      ORT_HANDLE_EXCEPTION([&]() {
+        ORT_THROW("Failed to construct locale with name:",
+                  name, ":", e.what(), ":Please, install necessary language-pack-XX and configure locales");
+      });
+    }
   }
 
   ORT_DISALLOW_COPY_ASSIGNMENT_AND_MOVE(Locale);
@@ -105,14 +121,15 @@ class Locale {
   std::locale loc_;
 };
 
-#if defined(__APPLE__) or defined(__ANDROID__)
+#if defined(__APPLE__) || defined(__ANDROID__)
+
 using Utf8Converter = std::wstring_convert<std::codecvt_utf8<wchar_t>>;
+
 #else
 
-// All others (Linux)
+// All others (not Windows, Apple, or Android)
 class Utf8Converter {
  public:
-
   Utf8Converter(const std::string&, const std::wstring&) {}
 
   std::wstring from_bytes(const std::string& s) const {
@@ -132,7 +149,7 @@ class Utf8Converter {
     // Temporary buffer assumes 1 byte to 1 wchar_t
     // to make sure it is enough.
     const size_t buffer_len = iconv_in_bytes * sizeof(wchar_t);
-    auto buffer = onnxruntime::make_unique<char[]>(buffer_len);
+    auto buffer = std::make_unique<char[]>(buffer_len);
     char* iconv_out = buffer.get();
     size_t iconv_out_bytes = buffer_len;
     auto ret = iconv(icvt, &iconv_in, &iconv_in_bytes, &iconv_out, &iconv_out_bytes);
@@ -166,7 +183,7 @@ class Utf8Converter {
     // Temp buffer, assume every code point converts into 3 bytes, this should be enough
     // We do not convert terminating zeros
     const size_t buffer_len = wstr.length() * 3;
-    auto buffer = onnxruntime::make_unique<char[]>(buffer_len);
+    auto buffer = std::make_unique<char[]>(buffer_len);
 
     char* iconv_out = buffer.get();
     size_t iconv_out_bytes = buffer_len;
@@ -182,11 +199,11 @@ class Utf8Converter {
   }
 };
 
-#endif // __APPLE__
+#endif
 
-const std::string default_locale("en_US.UTF-8"); // All non-MS
+const std::string default_locale("en_US.UTF-8");  // All non-MS
 
-#endif // MS_VER
+#endif  // _MSC_VER
 
 template <class ForwardIter>
 Status CopyCaseAction(ForwardIter first, ForwardIter end, OpKernelContext* ctx,
@@ -212,7 +229,7 @@ Status CopyCaseAction(ForwardIter first, ForwardIter end, OpKernelContext* ctx,
 
   TensorShape output_shape(output_dims);
   auto output_tensor = ctx->Output(0, output_shape);
-  auto const output_data = output_tensor->template MutableData<std::string>();
+  auto const output_data = output_tensor->MutableData<std::string>();
 
   size_t output_idx = 0;
   while (first != end) {
@@ -220,8 +237,10 @@ Status CopyCaseAction(ForwardIter first, ForwardIter end, OpKernelContext* ctx,
     if (caseaction == StringNormalizer::LOWER || caseaction == StringNormalizer::UPPER) {
       std::wstring wstr = converter.from_bytes(s);
       if (wstr == wconv_error) {
+        // Please do not include the input text in the error message as it could
+        // be deemed as a compliance violation by teams using this operator
         return Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT,
-                      "Input contains invalid utf8 chars at: " + static_cast<const std::string&>(s));
+                      "Input contains invalid utf8 chars");
       }
       // In place transform
       loc.ChangeCase(caseaction, wstr);
@@ -272,16 +291,16 @@ StringNormalizer::StringNormalizer(const OpKernelInfo& info) : OpKernel(info),
   Utf8Converter converter(conv_error, wconv_error);
 
   std::vector<std::string> swords = info.GetAttrsOrDefault<std::string>("stopwords");
-  for (const auto& sw : swords) {
+  for (auto& sw : swords) {
     ORT_ENFORCE(!sw.empty(), "Empty stopwords not allowed");
     if (is_case_sensitive_) {
-      auto p = stopwords_.insert(sw);
+      auto p = stopwords_.insert(std::move(sw));
       ORT_ENFORCE(p.second, "Duplicate stopwords not allowed");
     } else {
       std::wstring wstr = converter.from_bytes(sw);
       ORT_ENFORCE(wstr != wconv_error, "Stopword contains invalid utf8 chars");
       locale.ChangeCase(compare_caseaction_, wstr);
-      auto p = wstopwords_.insert(wstr);
+      auto p = wstopwords_.insert(std::move(wstr));
       ORT_ENFORCE(p.second, "Duplicate stopwords not allowed");
     }
   }
@@ -292,7 +311,7 @@ Status StringNormalizer::Compute(OpKernelContext* ctx) const {
 
   auto X = ctx->Input<Tensor>(0);
   if (X == nullptr) return Status(common::ONNXRUNTIME, common::FAIL, "input count mismatch");
-  auto& input_dims = X->Shape().GetDims();
+  auto input_dims = X->Shape().GetDims();
 
   size_t N = 0;
   size_t C = 0;
@@ -301,14 +320,14 @@ Status StringNormalizer::Compute(OpKernelContext* ctx) const {
       return Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT,
                     "Single dimension value must be greater than 0");
     }
-    C = input_dims[0];
+    C = onnxruntime::narrow<size_t>(input_dims[0]);
   } else if (input_dims.size() == 2) {
     if (input_dims[0] != 1 || input_dims[1] < 1) {
       return Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT,
                     "Input dimensions are either[C > 0] or [1][C > 0] allowed");
     }
     N = 1;
-    C = input_dims[1];
+    C = onnxruntime::narrow<size_t>(input_dims[1]);
   } else {
     return Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT,
                   "Input dimensions are either[C > 0] or [1][C > 0] allowed");
@@ -317,11 +336,11 @@ Status StringNormalizer::Compute(OpKernelContext* ctx) const {
   Status status;
   Locale locale(locale_name_);
   Utf8Converter converter(conv_error, wconv_error);
-  auto const input_data = X->template Data<std::string>();
+  auto* const input_data = X->Data<std::string>();
   using StrRef = std::reference_wrapper<const std::string>;
   if (is_case_sensitive_) {
     if (!stopwords_.empty()) {
-      std::vector<StrRef> filtered_strings;
+      InlinedVector<StrRef> filtered_strings;
       filtered_strings.reserve(C);
       auto first = input_data;
       auto const last = input_data + C;
@@ -343,8 +362,8 @@ Status StringNormalizer::Compute(OpKernelContext* ctx) const {
       // Filter input. When no case action is required
       // we simply store original string references.
       // Otherwise, we store converted strings.
-      std::vector<StrRef> filtered_orignal_strings;
-      std::vector<std::string> filtered_cased_strings;
+      InlinedVector<StrRef> filtered_orignal_strings;
+      InlinedVector<std::string> filtered_cased_strings;
       filtered_orignal_strings.reserve(C);
       filtered_cased_strings.reserve(C);
       auto first = input_data;
@@ -353,8 +372,10 @@ Status StringNormalizer::Compute(OpKernelContext* ctx) const {
         const std::string& s = *first;
         std::wstring wstr = converter.from_bytes(s);
         if (wstr == wconv_error) {
+          // Please do not include the input text in the error message as it could
+          // be deemed as a compliance violation by teams using this operator
           return Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT,
-                        "Input contains invalid utf8 chars at: " + s);
+                        "Input contains invalid utf8 chars");
         }
         locale.ChangeCase(compare_caseaction_, wstr);
         if (0 == wstopwords_.count(wstr)) {

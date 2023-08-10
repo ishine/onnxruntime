@@ -171,7 +171,7 @@ DWORD GetPropertyLength(PEVENT_RECORD pEvent, PTRACE_EVENT_INFO pInfo, USHORT i,
                  (pInfo->EventPropertyInfoArray[i].Flags & PropertyStruct) == PropertyStruct) {
         *PropertyLength = pInfo->EventPropertyInfoArray[i].length;
       } else {
-        wprintf(L"Unexpected length of 0 for intype %d and outtype %d\n",
+        wprintf(L"Unexpected length of 0 for intype %ud and outtype %ud\n",
                 pInfo->EventPropertyInfoArray[i].nonStructType.InType,
                 pInfo->EventPropertyInfoArray[i].nonStructType.OutType);
 
@@ -296,7 +296,7 @@ void OrtEventHandler(EVENT_RECORD* pEvent, void* pContext) {
                                   [&opname, &time_spent_in_this_op](const wchar_t* key, wchar_t* value) {
                                     if (wcscmp(key, L"op_name") == 0) {
                                       opname = value;
-                                    } else if (wcscmp(key, L"time") == 0) {                                 
+                                    } else if (wcscmp(key, L"time") == 0) {
                                       time_spent_in_this_op = wcstol(value, nullptr, 10);
                                     } else {
                                       wprintf(key);

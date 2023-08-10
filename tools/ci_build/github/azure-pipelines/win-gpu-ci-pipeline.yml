@@ -1,130 +1,107 @@
-jobs:
-- job: 'build'
-  pool: 'Win-GPU-2019'
-  strategy:
-    maxParallel: 2
-    matrix:
-      debug:
-        BuildConfig: 'Debug'
-      release:
+##### trigger Don't modified it manully ####
+trigger:
+  branches:
+    include:
+    - main
+    - rel-*
+  paths:
+    exclude:
+    - docs/**
+    - README.md
+    - CONTRIBUTING.md
+    - BUILD.md
+pr:
+  branches:
+    include:
+    - main
+    - rel-*
+  paths:
+    exclude:
+    - docs/**
+    - README.md
+    - CONTRIBUTING.md
+    - BUILD.md
+#### end trigger ####
+
+parameters:
+- name: RunOnnxRuntimeTests
+  displayName: Run Tests?
+  type: boolean
+  default: true
+
+stages:
+- stage: cuda
+  dependsOn: []
+  jobs:
+    - template: templates/jobs/win-ci-vs-2022-job.yml
+      parameters:
         BuildConfig: 'RelWithDebInfo'
-  variables:
-    OrtPackageId: 'Microsoft.ML.OnnxRuntime'
-    MsbuildArguments: '-detailedsummary -maxcpucount -consoleloggerparameters:PerformanceSummary'
-    OnnxRuntimeBuildDirectory: '$(Build.BinariesDirectory)'
-    DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
-    EnvSetupScript: setup_env.bat
-    buildArch: x64
-    setVcvars: true    
-  timeoutInMinutes: 120
-  workspace:
-    clean: all
-  steps:    
-  - task: UsePythonVersion@0
-    inputs: 
-      versionSpec: '3.7' 
-      addToPath: true 
-      architecture: $(buildArch)
+        EnvSetupScript: setup_env_cuda_11.bat
+        buildArch: x64
+        additionalBuildFlags: --enable_pybind --build_java --build_nodejs --use_cuda --cuda_home="$(Agent.TempDirectory)\v11.8" --enable_cuda_profiling --cmake_extra_defines CMAKE_CUDA_ARCHITECTURES=86
+        msbuildPlatform: x64
+        isX86: false
+        job_name_suffix: x64_RelWithDebInfo
+        RunOnnxRuntimeTests: ${{ parameters.RunOnnxRuntimeTests }}
+        RunStaticCodeAnalysis: false
+        ORT_EP_NAME: CUDA
+        WITH_CACHE: true
+        MachinePool: onnxruntime-Win2022-GPU-A10
 
-  - task: BatchScript@1
-    displayName: 'setup env'
-    inputs:
-      filename: '$(Build.SourcesDirectory)\tools\ci_build\github\windows\$(EnvSetupScript)'
-      modifyEnvironment: true
-      workingFolder: '$(Build.BinariesDirectory)'
+- stage: training
+  dependsOn: []
+  jobs:
+    - template: templates/jobs/win-ci-vs-2022-job.yml
+      parameters:
+        BuildConfig: 'RelWithDebInfo'
+        EnvSetupScript: setup_env_cuda_11.bat
+        buildArch: x64
+        additionalBuildFlags: --enable_pybind --enable_training --use_cuda --cuda_home="$(Agent.TempDirectory)\v11.8" --skip_onnx_tests --cmake_extra_defines CMAKE_CUDA_ARCHITECTURES=75
+        msbuildPlatform: x64
+        isX86: false
+        job_name_suffix: x64_RelWithDebInfo
+        RunOnnxRuntimeTests: ${{ parameters.RunOnnxRuntimeTests }}
+        RunStaticCodeAnalysis: false
+        ORT_EP_NAME: CUDA
+        WITH_CACHE: true
+        # Some unit tests crash on A10 GPUs. So this job still needs to use A10.
+        MachinePool: onnxruntime-Win2022-GPU-T4
+        isTraining: true
 
-  - script: |
-     python -m pip install -q pyopenssl setuptools wheel numpy     
-    workingDirectory: '$(Build.BinariesDirectory)'
-    displayName: 'Install python modules'
-    
-  - task: PythonScript@0
-    displayName: 'Generate cmake config'
-    inputs:
-      scriptPath: '$(Build.SourcesDirectory)\tools\ci_build\build.py'
-      arguments: '--config $(BuildConfig) --build_dir $(Build.BinariesDirectory) --skip_submodule_sync --build_shared_lib --update --cmake_generator "Visual Studio 16 2019" --msvc_toolset 14.16 --build_wheel --use_featurizers --use_dnnl --build_shared_lib --enable_onnx_tests --use_dml --use_cuda --cuda_version=10.0 --cuda_home="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.0" --cudnn_home="C:\local\cudnn-10.0-windows10-x64-v7.6.5.32\cuda" --cmake_extra_defines CMAKE_SYSTEM_VERSION=10.0.18362.0'
-      workingDirectory: '$(Build.BinariesDirectory)'
+- stage: dml
+  dependsOn: []
+  jobs:
+    - template: templates/jobs/win-ci-vs-2022-job.yml
+      parameters:
+        BuildConfig: 'RelWithDebInfo'
+        EnvSetupScript: setup_env.bat
+        buildArch: x64
+        additionalBuildFlags: --enable_pybind --use_dml --enable_wcos  --use_winml
+        msbuildPlatform: x64
+        isX86: false
+        job_name_suffix: x64_RelWithDebInfo
+        RunOnnxRuntimeTests: ${{ parameters.RunOnnxRuntimeTests }}
+        RunStaticCodeAnalysis: false
+        ORT_EP_NAME: DML
+        WITH_CACHE: true
+        MachinePool: onnxruntime-Win2022-GPU-dml-A10
 
-  - task: VSBuild@1
-    displayName: 'Build'
-    inputs:
-      solution: '$(Build.BinariesDirectory)\$(BuildConfig)\onnxruntime.sln'
-      platform: 'x64'
-      configuration: $(BuildConfig)
-      msbuildArgs: $(MsbuildArguments)
-      msbuildArchitecture: $(buildArch)
-      maximumCpuCount: true
-      logProjectEvents: false
-      workingFolder: '$(Build.BinariesDirectory)\$(BuildConfig)'
-      createLogFile: true
-
-  - task: PythonScript@0
-    displayName: 'Build wheel'
-    inputs:
-      scriptPath: '$(Build.SourcesDirectory)\setup.py'
-      arguments: 'bdist_wheel'
-      workingDirectory: '$(Build.BinariesDirectory)\$(BuildConfig)\$(BuildConfig)'
-
-  - template: templates/set-test-data-variables-step.yml
-
-  - task: NuGetToolInstaller@0
-    displayName: Use Nuget 4.9
-    inputs:
-      versionSpec: 4.9.4  
-
-   
-
-  - task: PythonScript@0
-    displayName: 'Download test data'
-    inputs:
-      scriptPath: '$(Build.SourcesDirectory)\tools\ci_build\github\download_test_data.py'
-      arguments: --test_data_url $(TestDataUrl) --build_dir $(Build.BinariesDirectory)
-      workingDirectory: $(Build.BinariesDirectory)
-
-  - task: DotNetCoreCLI@2
-    displayName: 'Restore nuget packages'
-    inputs:
-      command: restore
-      projects: '$(Build.SourcesDirectory)\csharp\OnnxRuntime.CSharp.sln'
-      configuration: '$(BuildConfig)'
-      arguments: '--configuration $(BuildConfig) -p:Platform="Any CPU" -p:OrtPackageId=$(OrtPackageId)'
-      workingDirectory: '$(Build.SourcesDirectory)\csharp'      
-
-  - task: DotNetCoreCLI@2
-    displayName: 'Build C#'    
-    inputs:
-      command: build
-      projects: '$(Build.SourcesDirectory)\csharp\OnnxRuntime.CSharp.sln'
-      configuration: '$(BuildConfig)'          
-      arguments: '--configuration $(BuildConfig) -p:Platform="Any CPU" -p:OnnxRuntimeBuildDirectory="$(Build.BinariesDirectory)" -p:OrtPackageId=$(OrtPackageId)'
-      workingDirectory: '$(Build.SourcesDirectory)\csharp'
-
-  - task: DotNetCoreCLI@2
-    displayName: 'Test C#'
-    condition: and(succeeded(), eq(variables['BuildConfig'], 'RelWithDebInfo'))
-    inputs:
-      command: test
-      projects: '$(Build.SourcesDirectory)\csharp\test\Microsoft.ML.OnnxRuntime.Tests\Microsoft.ML.OnnxRuntime.Tests.csproj'
-      configuration: '$(BuildConfig)'          
-      arguments: '--configuration $(BuildConfig) -p:Platform="Any CPU" -p:OnnxRuntimeBuildDirectory="$(Build.BinariesDirectory)" -p:OrtPackageId=$(OrtPackageId)'
-      workingDirectory: '$(Build.SourcesDirectory)\csharp'
-
-  - script: |
-     mklink  /D /J $(Build.BinariesDirectory)\$(BuildConfig)\models $(Build.BinariesDirectory)\models  
-     DIR dist\ /S /B > wheel_filename_file
-     set /p WHEEL_FILENAME=<wheel_filename_file
-     del wheel_filename_file
-     python.exe -m pip install -q --upgrade %WHEEL_FILENAME%
-     set PATH=$(Build.BinariesDirectory)\$(BuildConfig)\$(BuildConfig);%PATH%
-     python $(Build.SourcesDirectory)\tools\ci_build\build.py --config $(BuildConfig) --build_dir $(Build.BinariesDirectory) --skip_submodule_sync --build_shared_lib --test --cmake_generator "Visual Studio 16 2019" --msvc_toolset 14.16 --build_wheel --use_featurizers --use_dnnl --build_shared_lib --enable_onnx_tests --use_dml --use_cuda --cuda_version=10.0 --cuda_home="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v10.0" --cudnn_home="C:\local\cudnn-10.0-windows10-x64-v7.6.5.32\cuda" --cmake_extra_defines CMAKE_SYSTEM_VERSION=10.0.18362.0
-   
-    workingDirectory: '$(Build.BinariesDirectory)\$(BuildConfig)\$(BuildConfig)'
-    displayName: 'Run tests'
- 
-
-  - template: templates/component-governance-component-detection-steps.yml
-    parameters :
-      condition : 'succeeded'  
-
-  
-   
+- stage: kernelDocumentation
+  dependsOn: []
+  jobs:
+    - template: templates/jobs/win-ci-vs-2022-job.yml
+      parameters:
+        BuildConfig: 'RelWithDebInfo'
+        EnvSetupScript: setup_env_cuda_11.bat
+        buildArch: x64
+        # note: need to specify `--gen_doc` when creating the build config so it has to be in additionalBuildFlags
+        additionalBuildFlags: --gen_doc validate --skip_tests --enable_pybind --use_dml --use_cuda --cuda_home="$(Agent.TempDirectory)\v11.8" --cmake_extra_defines CMAKE_CUDA_ARCHITECTURES=86 --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF
+        msbuildPlatform: x64
+        isX86: false
+        job_name_suffix: x64_RelWithDebInfo
+        RunOnnxRuntimeTests: false
+        RunStaticCodeAnalysis: false
+        GenerateDocumentation: true
+        ORT_EP_NAME: CUDA # It doesn't really matter which EP is selected here since this stage is for documentation.
+        WITH_CACHE: true
+        MachinePool: onnxruntime-Win2022-GPU-A10

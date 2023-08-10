@@ -28,18 +28,7 @@ namespace {
 
 class WindowsEnvTime : public EnvTime {
  public:
-  WindowsEnvTime() : GetSystemTimePreciseAsFileTime_(NULL) {
-    // GetSystemTimePreciseAsFileTime function is only available in the latest
-    // versions of Windows. For that reason, we try to look it up in
-    // kernel32.dll at runtime and use an alternative option if the function
-    // is not available.
-    HMODULE module = GetModuleHandleW(L"kernel32.dll");
-    if (module != NULL) {
-      auto func = (FnGetSystemTimePreciseAsFileTime)GetProcAddress(
-          module, "GetSystemTimePreciseAsFileTime");
-      GetSystemTimePreciseAsFileTime_ = func;
-    }
-  }
+  WindowsEnvTime() : GetSystemTimePreciseAsFileTime_(GetSystemTimePreciseAsFileTime) {}
 
   uint64_t NowMicros() override {
     if (GetSystemTimePreciseAsFileTime_ != NULL) {
@@ -103,13 +92,13 @@ void SetTimeSpecToZero(TIME_SPEC* value) {
   *value = 0;
 }
 
-void AccumulateTimeSpec(TIME_SPEC* base, TIME_SPEC* start, TIME_SPEC* end) {
+void AccumulateTimeSpec(TIME_SPEC* base, const TIME_SPEC* start, const TIME_SPEC* end) {
   *base += std::max<TIME_SPEC>(0, *end - *start);
 }
 
-//Return the interval in seconds.
-//If the function fails, the return value is zero
-double TimeSpecToSeconds(TIME_SPEC* value) {
+// Return the interval in seconds.
+// If the function fails, the return value is zero
+double TimeSpecToSeconds(const TIME_SPEC* value) {
   BOOL initState = InitOnceExecuteOnce(&g_InitOnce, InitHandleFunction, nullptr, nullptr);
   if (!initState) return 0;
   return *value / (double)freq.QuadPart;

@@ -5,12 +5,13 @@
 #include "test/providers/provider_test_utils.h"
 
 #include <stdint.h>
+#include <random>
 
 namespace onnxruntime {
 namespace test {
 namespace tfidfvectorizer_test {
 
-const int opset_ver = 9;
+constexpr int opset_ver = 9;
 
 void InitTestAttr(OpTester& test, const std::string& mode,
                   int64_t min_gram_length, int64_t max_gram_length, int64_t max_skip_count,
@@ -52,10 +53,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_onlyBigrams_Skip0) {
   // s=0, Min=Max=2, weights empty, int32
   InitTestAttr(test, "TF", 2, 2, 0,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{12};
@@ -74,10 +75,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_onlyBigrams_Skip0_Empty_Dim1Fail) {
   // s=0, Min=Max=2, weights empty, int32
   InitTestAttr(test, "TF", 2, 2, 0,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{0};
@@ -98,10 +99,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_onlyBigrams_Skip0_Empty_Dim1Success) {
   // s=0, Min=Max=2, weights empty, int32
   InitTestAttr(test, "TF", 2, 2, 0,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{0};
@@ -120,10 +121,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_onlyBigrams_Skip0_Empty_Dim2) {
   // s=0, Min=Max=2, weights empty, int32
   InitTestAttr(test, "TF", 2, 2, 0,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{1, 0};
@@ -143,10 +144,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_onlyBigrams_Skip01_Empty_Dim2) {
   // s=0, Min=Max=2, weights empty, int32
   InitTestAttr(test, "TF", 2, 2, 0,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{0, 1};
@@ -166,10 +167,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_onlyBigrams_Skip0_Empty_Dim2N) {
   // s=0, Min=Max=2, weights empty, int32
   InitTestAttr(test, "TF", 2, 2, 0,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{2, 0};
@@ -189,10 +190,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_BatchOnlyBigrams_Skip0) {
   // s=0, Min=Max=2, weights empty, int32
   InitTestAttr(test, "TF", 2, 2, 0,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   // Tow batches by six
@@ -214,11 +215,11 @@ TEST(TfIdfVectorizerTest, String_TF_OnlyBigrams_Skip0) {
   // s=0, Min=Max=2, weights empty, string
   InitTestAttr(test, "TF", 2, 2, 0,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
                {},
-               {"two", "three", "five", "four",                     //1-grams
-                "five", "six", "seven", "eight", "six", "seven"});  //bi-grams
+               {"two", "three", "five", "four",                     // 1-grams
+                "five", "six", "seven", "eight", "six", "seven"});  // bi-grams
 
   std::vector<int64_t> dims{12};
   std::vector<std::string> input{"one", "one", "three", "three", "three", "seven", "eight",
@@ -237,11 +238,11 @@ TEST(TfIdfVectorizerTest, String_TF_BatchOnlyBigrams_Skip0) {
   // s=0, Min=Max=2, weights empty, string
   InitTestAttr(test, "TF", 2, 2, 0,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
                {},
-               {"two", "three", "five", "four",                     //1-grams
-                "five", "six", "seven", "eight", "six", "seven"});  //bi-grams
+               {"two", "three", "five", "four",                     // 1-grams
+                "five", "six", "seven", "eight", "six", "seven"});  // bi-grams
 
   std::vector<int64_t> dims{2, 6};
   std::vector<std::string> input{"one", "one", "three", "three", "three", "seven",
@@ -268,10 +269,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_onlyBigrams_LevelEmpty) {
                    0,
                    1,
                    2,
-               },  //7 output indexes
+               },  // 7 output indexes
                {},
-               {                    //1-grams none
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {                    // 1-grams none
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{12};
@@ -290,10 +291,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_onlyBigrams_Skip5) {
   // s=5, Min=Max=2, weights empty, int32
   InitTestAttr(test, "TF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{12};
@@ -314,10 +315,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_BatchOnlyBigrams_Skip5) {
   // s=5, , Min=Max=2, weights empty, int32
   InitTestAttr(test, "TF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{2, 6};
@@ -340,11 +341,11 @@ TEST(TfIdfVectorizerTest, String_TF_onlyBigrams_Skip5) {
   // s=5, , Min=Max=2, weights empty, string
   InitTestAttr(test, "TF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
                {},
-               {"two", "three", "five", "four",                     //1-grams
-                "five", "six", "seven", "eight", "six", "seven"});  //bi-grams
+               {"two", "three", "five", "four",                     // 1-grams
+                "five", "six", "seven", "eight", "six", "seven"});  // bi-grams
 
   std::vector<int64_t> dims{12};
   std::vector<std::string> input{"one", "one", "three", "three", "three", "seven", "eight",
@@ -365,11 +366,11 @@ TEST(TfIdfVectorizerTest, String_TF_BatchOnlyBigrams_Skip5) {
   // s=5, , Min=Max=2, weights empty, string
   InitTestAttr(test, "TF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
                {},
-               {"two", "three", "five", "four",                     //1-grams
-                "five", "six", "seven", "eight", "six", "seven"});  //bi-grams
+               {"two", "three", "five", "four",                     // 1-grams
+                "five", "six", "seven", "eight", "six", "seven"});  // bi-grams
 
   std::vector<int64_t> dims{2, 6};
   std::vector<std::string> input{"one", "one", "three", "three", "three", "seven", "eight",
@@ -389,10 +390,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_UniAndBigrams_Skip5) {
   // s=5, , Min=1, Max=2, weights empty, int32
   InitTestAttr(test, "TF", 1, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{12};
@@ -412,10 +413,10 @@ TEST(TfIdfVectorizerTest, Int32_TF_BatchUniAndBigrams_Skip5) {
   // s=5, Min=1, Max=2, weights empty, int32
   InitTestAttr(test, "TF", 1, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{2, 6};
@@ -437,11 +438,11 @@ TEST(TfIdfVectorizerTest, String_TF_UniAndBigrams_Skip5) {
   // s=5, Min=1, Max=2, weights empty, string
   InitTestAttr(test, "TF", 1, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
                {},
-               {"two", "three", "five", "four",                     //1-grams
-                "five", "six", "seven", "eight", "six", "seven"});  //bi-grams
+               {"two", "three", "five", "four",                     // 1-grams
+                "five", "six", "seven", "eight", "six", "seven"});  // bi-grams
 
   std::vector<int64_t> dims{12};
   std::vector<std::string> input{"one", "one", "three", "three", "three", "seven", "eight",
@@ -460,11 +461,11 @@ TEST(TfIdfVectorizerTest, String_TF_BatchUniAndBigrams_Skip5) {
   // s=5, Min=1, Max=2, weights empty, string
   InitTestAttr(test, "TF", 1, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
                {},
-               {"two", "three", "five", "four",                     //1-grams
-                "five", "six", "seven", "eight", "six", "seven"});  //bi-grams
+               {"two", "three", "five", "four",                     // 1-grams
+                "five", "six", "seven", "eight", "six", "seven"});  // bi-grams
 
   std::vector<int64_t> dims{2, 6};
   std::vector<std::string> input{"one", "one", "three", "three", "three", "seven", "eight",
@@ -487,10 +488,10 @@ TEST(TfIdfVectorizerTest, Int32_IDF_onlyBigrams_Skip5) {
   // we should get all 1.0f where count is not zero
   InitTestAttr(test, "IDF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{12};
@@ -509,11 +510,11 @@ TEST(TfIdfVectorizerTest, String_IDF_onlyBigrams_Skip5) {
   // s=5, Min=Max=2, weights empty, string
   InitTestAttr(test, "IDF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
                {},
-               {"two", "three", "five", "four",                     //1-grams
-                "five", "six", "seven", "eight", "six", "seven"});  //bi-grams
+               {"two", "three", "five", "four",                     // 1-grams
+                "five", "six", "seven", "eight", "six", "seven"});  // bi-grams
 
   std::vector<int64_t> dims{12};
   std::vector<std::string> input{"one", "one", "three", "three", "three", "seven", "eight",
@@ -535,10 +536,10 @@ TEST(TfIdfVectorizerTest, Int32_TFIDF_onlyBigrams_Skip5) {
   // default
   InitTestAttr(test, "TFIDF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
-               {2, 3, 5, 4,         //1-grams
-                5, 6, 7, 8, 6, 7},  //bi-grams
+               {2, 3, 5, 4,         // 1-grams
+                5, 6, 7, 8, 6, 7},  // bi-grams
                {});
 
   std::vector<int64_t> dims{12};
@@ -557,11 +558,11 @@ TEST(TfIdfVectorizerTest, String_TFIDF_onlyBigrams_Skip5) {
   // s=5, Min=Max=2, weights empty, string
   InitTestAttr(test, "TFIDF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},  //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
                {},
                {},
-               {"two", "three", "five", "four",                     //1-grams
-                "five", "six", "seven", "eight", "six", "seven"});  //bi-grams
+               {"two", "three", "five", "four",                     // 1-grams
+                "five", "six", "seven", "eight", "six", "seven"});  // bi-grams
 
   std::vector<int64_t> dims{12};
   std::vector<std::string> input{"one", "one", "three", "three", "three", "seven", "eight",
@@ -582,10 +583,10 @@ TEST(TfIdfVectorizerTest, Int32_IDFWeights_onlyBigrams_Skip5) {
   // with non-zero counts must be replaced with the supplied weights
   InitTestAttr(test, "IDF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},                //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},                // 7 output indexes
                {2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0},  // weights
-               {2, 3, 5, 4,                          //1-grams
-                5, 6, 7, 8, 6, 7},                   //bi-grams
+               {2, 3, 5, 4,                          // 1-grams
+                5, 6, 7, 8, 6, 7},                   // bi-grams
                {});
 
   std::vector<int64_t> dims{12};
@@ -604,11 +605,11 @@ TEST(TfIdfVectorizerTest, String_IDFWeights_onlyBigrams_Skip5) {
   // s=5, Min=Max=2, weights specified, string
   InitTestAttr(test, "IDF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},                //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},                // 7 output indexes
                {2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0},  // weights
                {},
-               {"two", "three", "five", "four",                     //1-grams
-                "five", "six", "seven", "eight", "six", "seven"});  //bi-grams
+               {"two", "three", "five", "four",                     // 1-grams
+                "five", "six", "seven", "eight", "six", "seven"});  // bi-grams
 
   std::vector<int64_t> dims{12};
   std::vector<std::string> input{"one", "one", "three", "three", "three", "seven", "eight",
@@ -629,10 +630,10 @@ TEST(TfIdfVectorizerTest, Int32_TFIDFWeights_onlyBigrams_Skip5) {
   // We should have all counts scaled by weights
   InitTestAttr(test, "TFIDF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},                //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},                // 7 output indexes
                {2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0},  // weights
-               {2, 3, 5, 4,                          //1-grams
-                5, 6, 7, 8, 6, 7},                   //bi-grams
+               {2, 3, 5, 4,                          // 1-grams
+                5, 6, 7, 8, 6, 7},                   // bi-grams
                {});
 
   std::vector<int64_t> dims{12};
@@ -651,11 +652,11 @@ TEST(TfIdfVectorizerTest, String_TFIDFWeights_onlyBigrams_Skip5) {
   // s=5, Min=Max=2, weights specified, string
   InitTestAttr(test, "TFIDF", 2, 2, 5,
                {0, 4},
-               {0, 1, 2, 3, 4, 5, 6},                //7 output indexes
+               {0, 1, 2, 3, 4, 5, 6},                // 7 output indexes
                {2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 2.0},  // weights
                {},
-               {"two", "three", "five", "four",                     //1-grams
-                "five", "six", "seven", "eight", "six", "seven"});  //bi-grams
+               {"two", "three", "five", "four",                     // 1-grams
+                "five", "six", "seven", "eight", "six", "seven"});  // bi-grams
 
   std::vector<int64_t> dims{12};
   std::vector<std::string> input{"one", "one", "three", "three", "three", "seven", "eight",
@@ -668,6 +669,77 @@ TEST(TfIdfVectorizerTest, String_TFIDFWeights_onlyBigrams_Skip5) {
 
   test.Run(OpTester::ExpectResult::kExpectSuccess);
 }
+
+TEST(TfIdfVectorizerTest, String_TFIDFWeights_onlyBigrams_Skip5_2rows) {
+  OpTester test("TfIdfVectorizer", opset_ver);
+  // s=5, Min=Max=2, weights specified, string
+  InitTestAttr(test, "TFIDF", 2, 2, 5,
+               {0, 4},
+               {0, 1, 2, 3, 4, 5, 6},                       // 7 output indexes
+               {2.0f, 2.0f, 2.0f, 2.0f, 2.0f, 3.0f, 2.0f},  // weights
+               {},
+               {"two", "three", "five", "four",                     // 1-grams
+                "five", "six", "seven", "eight", "six", "seven"});  // bi-grams
+
+  test.AddInput<std::string>("T", {2, 6}, {"one", "one", "three", "three", "three", "seven", "eight", "six", "seven", "five", "six", "eight"});
+
+  test.AddOutput<float>("Y", {2, 7}, {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f,  // No bi-grams in the first row
+                                      0.f, 0.f, 0.f, 0.f, 2.f, 3.f, 2.f});
+
+  test.Run(OpTester::ExpectResult::kExpectSuccess);
+}
+
+// This test runs the inference 100 times to test the improvement
+// It enables profiling while running inference multiple times.
+// So we can manually inspect the profiling output
+// TEST(TfIdfVectorizerTest, String_IDF_PerformanceTest) {
+//  OpTester test("TfIdfVectorizer", opset_ver);
+//
+//  std::vector<std::string> ngrams_pool =
+//              {"two long string donot inline", "three long string donot inline", "five long string donot inline", "four long string donot inline",                     //1-grams
+//               "five long string donot inline", "six long string donot inline", "seven long string donot inline", "eight long string donot inline", "six long string donot inline", "seven long string donot inline"};  //bi-grams
+//
+//  // s=1, Min=Max=2, weights empty, string
+//  InitTestAttr(test, "IDF", 2, 2, 1,
+//               {0, 4},
+//               {0, 1, 2, 3, 4, 5, 6},  // 7 output indexes
+//               {}, // no weights
+//               {}, // int pool
+//               ngrams_pool);
+//
+//  // Pick random strings out of ngrams pool and generate an input of 100 batches(rows) by 100 strings each.
+//  // i.e. 10^4 strings
+//  std::vector<int64_t> dims{100, 100};
+//  const size_t inp_num = 100u * 100u;
+//  std::vector<std::string> input;
+//  input.reserve(inp_num);
+//
+//  std::random_device rd;
+//  std::mt19937 gen(rd());
+//  std::uniform_int_distribution<size_t> dis(0, ngrams_pool.size() - 1);
+//  for (size_t i = 0; i < inp_num; ++i) {
+//    auto idx = dis(gen);
+//    assert(idx < ngrams_pool.size());
+//    input.push_back(ngrams_pool[idx]);
+//  }
+//
+//  test.AddInput<std::string>("T", dims, input);
+//
+//  // We do not care about the output in this case so we do not verify it, we use
+//  // custom verification function not to verify anything.
+//  std::vector<int64_t> out_dims{100, 7};
+//  std::vector<float> output;
+//  output.resize(100u * 7, 0);
+//  test.AddOutput<float>("Y", out_dims, output);
+//
+//  test.SetNumRunCalls(100);
+//
+//  // Will collect and manually aggreate numbers
+//  SessionOptions so;
+//  so.enable_profiling = true;
+//  test.Run(so, OpTester::ExpectResult::kExpectSuccess, std::string(), {}, nullptr, nullptr,
+//    [](const std::vector<OrtValue>&, const std::string&) {});
+//}
 
 }  // namespace test
 }  // namespace onnxruntime

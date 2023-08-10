@@ -19,7 +19,7 @@ Status EliminateSlice::Apply(Graph& graph, Node& node, RewriteRuleEffect& rule_e
 
 bool EliminateSlice::SatisfyCondition(const Graph& graph, const Node& node, const logging::Logger& logger) const {
   // We currently support elimination for Slice operator v1.
-  if (!graph_utils::IsSupportedOptypeVersionAndDomain(node, "Slice", {1, 10, 11})) {
+  if (!graph_utils::IsSupportedOptypeVersionAndDomain(node, "Slice", {1, 10, 11, 13})) {
     return false;
   }
 
@@ -27,8 +27,8 @@ bool EliminateSlice::SatisfyCondition(const Graph& graph, const Node& node, cons
     return false;
   }
 
-  std::vector<int64_t> starts;
-  std::vector<int64_t> ends;
+  InlinedVector<int64_t> starts;
+  InlinedVector<int64_t> ends;
 
   if (graph_utils::MatchesOpSinceVersion(node, {1})) {
     // If it is a Slice operator of opset version 1, starts/ends/axes are provided as node attributes.
@@ -37,13 +37,13 @@ bool EliminateSlice::SatisfyCondition(const Graph& graph, const Node& node, cons
         starts.size() != ends.size()) {
       return false;
     }
-    std::vector<int64_t> axes;
+    InlinedVector<int64_t> axes;
     // If there is an axes attribute, it has to be the same size as the starts and ends.
     if (graph_utils::GetRepeatedNodeAttributeValues(node, "axes", axes) && (axes.size() != starts.size())) {
       return false;
     }
-  } else if (graph_utils::MatchesOpSinceVersion(node, {10, 11})) {
-    // If it is a Slice operator of opset version 10 or 11, starts/ends/axes/steps are provided as node inputs.
+  } else if (graph_utils::MatchesOpSinceVersion(node, {10, 11, 13})) {
+    // If it is a Slice operator of opset version >= 10, starts/ends/axes/steps are provided as node inputs.
 
     // Returns a pointer to the corresponding NodeArg if input of the node at this index exists; otherwise, a nullptr.
     auto get_input_if_exists = [&node](size_t input_idx) -> const NodeArg* {
@@ -60,14 +60,14 @@ bool EliminateSlice::SatisfyCondition(const Graph& graph, const Node& node, cons
     };
 
     auto get_initializer_data =
-        [](const ONNX_NAMESPACE::TensorProto* initializer) -> std::vector<int64_t> {
-      Initializer init(*initializer);
+        [&graph](const ONNX_NAMESPACE::TensorProto* initializer) -> InlinedVector<int64_t> {
+      Initializer init(*initializer, graph.ModelPath());
       if (initializer->data_type() == ONNX_NAMESPACE::TensorProto::INT32) {
         int32_t* init_data = init.data<int32_t>();
-        return std::vector<int64_t>(init_data, init_data + init.size());
+        return InlinedVector<int64_t>(init_data, init_data + init.size());
       } else if (initializer->data_type() == ONNX_NAMESPACE::TensorProto::INT64) {
         int64_t* init_data = init.data<int64_t>();
-        return std::vector<int64_t>(init_data, init_data + init.size());
+        return InlinedVector<int64_t>(init_data, init_data + init.size());
       }
       return {};
     };
@@ -97,7 +97,7 @@ bool EliminateSlice::SatisfyCondition(const Graph& graph, const Node& node, cons
           if (!steps_init) {
             return false;
           }
-          std::vector<int64_t> steps = get_initializer_data(steps_init);
+          InlinedVector<int64_t> steps = get_initializer_data(steps_init);
           if (steps.size() != starts.size()) {
             return false;
           }

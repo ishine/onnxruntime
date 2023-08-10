@@ -56,7 +56,7 @@ Status FuseReluClip::Apply(Graph& graph, Node& node, RewriteRuleEffect& rule_eff
 
       data_type = initializer->data_type();
       // construct an initializer to gracefully handle typed or raw data in the TensorProto
-      Initializer i(*initializer);
+      Initializer i(*initializer, graph.ModelPath());
       switch (data_type) {
         case ONNX_NAMESPACE::TensorProto_DataType_FLOAT:
           if (*i.data<float>() < 0.f) {
@@ -65,6 +65,11 @@ Status FuseReluClip::Apply(Graph& graph, Node& node, RewriteRuleEffect& rule_eff
           break;
         case ONNX_NAMESPACE::TensorProto_DataType_FLOAT16:
           if (math::halfToFloat(i.data<MLFloat16>()->val) < 0.f) {
+            replace_min = true;
+          }
+          break;
+        case ONNX_NAMESPACE::TensorProto_DataType_BFLOAT16:
+          if (i.data<BFloat16>()->ToFloat() < 0.f) {
             replace_min = true;
           }
           break;
@@ -91,9 +96,17 @@ Status FuseReluClip::Apply(Graph& graph, Node& node, RewriteRuleEffect& rule_eff
         mutable_next_node->ClearAttribute("min");
         mutable_next_node->AddAttribute("min", 0.f);
       } else {
+        // Add the initialized tensor to the graph
         graph.AddInitializedTensor(replacement_min);
+
+        // Create a corresponding NodeArg for the initialized tensor
+        ONNX_NAMESPACE::TypeProto t;
+        t.mutable_tensor_type()->set_elem_type(replacement_min.data_type());
+        NodeArg* replacement_min_nodearg = &graph.GetOrCreateNodeArg(replacement_min.name(), &t);
+
+        // Replace the input def at the appropriate index of the Clip node
         auto& mutable_input_defs = mutable_next_node->MutableInputDefs();
-        NodeArg* replacement_min_nodearg = graph.GetNodeArg(replacement_min.name());
+
         if (mutable_input_defs.size() == 1) {  // Clip node only has the required 'input' so add optional 'min' input
           mutable_input_defs.push_back(replacement_min_nodearg);
           mutable_next_node->MutableInputArgsCount().push_back(1);
@@ -110,7 +123,7 @@ Status FuseReluClip::Apply(Graph& graph, Node& node, RewriteRuleEffect& rule_eff
 }
 
 bool FuseReluClip::SatisfyCondition(const Graph& graph, const Node& node, const logging::Logger& logger) const {
-  if (!graph_utils::IsSupportedOptypeVersionAndDomain(node, "Relu", {6})) {
+  if (!graph_utils::IsSupportedOptypeVersionAndDomain(node, "Relu", {6, 13, 14})) {
     return false;
   }
 
@@ -122,7 +135,7 @@ bool FuseReluClip::SatisfyCondition(const Graph& graph, const Node& node, const 
   // as Clip will apply the minimum. If the Clip 'min' value is < 0 we need
   // to update it to 0 to apply what the Relu would have done. We do that in Apply.
   const auto& next_node = *node.OutputNodesBegin();
-  if (!graph_utils::IsSupportedOptypeVersionAndDomain(next_node, "Clip", {6, 11}) ||
+  if (!graph_utils::IsSupportedOptypeVersionAndDomain(next_node, "Clip", {6, 11, 12, 13}) ||
       next_node.GetExecutionProviderType() != node.GetExecutionProviderType()) {
     return false;
   }

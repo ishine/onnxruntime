@@ -12,6 +12,7 @@ class TFModelInfo : public TestModelInfo {
   const PATH_CHAR_TYPE* GetModelUrl() const override { return model_url_.c_str(); }
 
   const std::string& GetNodeName() const override { return node_name_; }
+  const ONNX_NAMESPACE::ValueInfoProto* GetInputInfoFromModel(size_t) const override { return nullptr; }
   const ONNX_NAMESPACE::ValueInfoProto* GetOutputInfoFromModel(size_t) const override { return nullptr; }
 
   int GetInputCount() const override;
@@ -20,10 +21,10 @@ class TFModelInfo : public TestModelInfo {
   const std::string& GetOutputName(size_t i) const override;
   ~TFModelInfo() override = default;
 
-  static TestModelInfo* Create(_In_ const PATH_CHAR_TYPE* model_url);
+  static std::unique_ptr<TestModelInfo> Create(_In_ const PATH_CHAR_TYPE* model_url);
+  TFModelInfo() = default;
 
  private:
-  TFModelInfo() = default;
   std::basic_string<PATH_CHAR_TYPE> model_url_;
   std::vector<std::string> input_names_;
   std::vector<std::string> output_names_;

@@ -9,19 +9,16 @@
 #include <wrl/client.h>
 #include <wrl/implements.h>
 
-namespace WRL
-{
-    template <typename... TInterfaces>
-    using Base = Microsoft::WRL::RuntimeClass<
-        Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
-        TInterfaces...
-        >;
+namespace WRL {
+template <typename... TInterfaces>
+using Base = Microsoft::WRL::RuntimeClass<
+    Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+    TInterfaces...>;
 }
-
-using namespace Microsoft::WRL;
 
 namespace Dml
 {
+    using Microsoft::WRL::ComPtr;
     class PooledUploadHeap;
     class ReadbackHeap;
     class ExecutionContext;
@@ -30,18 +27,16 @@ namespace Dml
     class ExecutionProvider;
 
     class ExecutionProviderImpl : public WRL::Base<Dml::IExecutionProvider,
-                                  winrt::Windows::AI::MachineLearning::implementation::IWinmlExecutionProvider>
+                                  Windows::AI::MachineLearning::Adapter::IWinmlExecutionProvider>
     {
     public:
-        explicit ExecutionProviderImpl::ExecutionProviderImpl(
+        ExecutionProviderImpl(
             IDMLDevice* dmlDevice,
             ID3D12Device* d3d12Device,
             ID3D12CommandQueue* queue,
             bool enableMetacommands = true);
 
         void ReleaseCompletedReferences();
-
-        void TrimUploadHeap();
 
     public: // implements Dml::IExecutionProvider
         STDMETHOD(GetD3DDevice)(_COM_Outptr_ ID3D12Device** d3dDevice) const noexcept final;
@@ -77,10 +72,11 @@ namespace Dml
             ) const noexcept final;
 
         STDMETHOD(CopyTensor)(IMLOperatorTensor* dst, IMLOperatorTensor* src) const noexcept final;
+        STDMETHOD(CopyTensors)(gsl::span<IMLOperatorTensor*> dst, gsl::span<IMLOperatorTensor*> src) const noexcept final;
 
         STDMETHOD(FillTensorWithPattern)(
             IMLOperatorTensor* dst,
-            gsl::span<const std::byte> value
+            gsl::span<const std::byte> rawValue
             ) const noexcept final;
 
         STDMETHOD(UploadToResource)(ID3D12Resource* dstData, const void* srcData, uint64_t srcDataSize) const noexcept final;
@@ -88,13 +84,13 @@ namespace Dml
         std::vector<std::unique_ptr<onnxruntime::ComputeCapability>>
         GetCapability(
             const onnxruntime::GraphViewer& graph,
-            const std::vector<const onnxruntime::KernelRegistry*>& registries
+            const onnxruntime::IExecutionProvider::IKernelLookup& kernel_lookup
             ) const;
 
-        uint32_t GetSuppportedDeviceDataTypeMask() const;
+        uint32_t GetSupportedDeviceDataTypeMask() const;
 
         onnxruntime::common::Status CopyTensor(const onnxruntime::Tensor& src, onnxruntime::Tensor& dst) const;
-        onnxruntime::common::Status WaitForGpuCompletion();
+        onnxruntime::common::Status CopyTensors(const std::vector<onnxruntime::IDataTransfer::SrcDstPair>& src_dst_pairs) const;
 
         // IWinmlExecutionProvider methods
         void QueueReference(IUnknown* object) override;
@@ -108,14 +104,14 @@ namespace Dml
             bool isInternalOperator,
             IUnknown* data,
             IUnknown** abiData) const override;
-                
+
        uint64_t TryGetPooledAllocationId(
             IUnknown* data,
             bool isInternalOperator) override;
 
-        void GetABIExecutionInterface(
+        void GetABIExecutionInterfaceAndInvalidateState(
             bool isInternalOperator,
-            IUnknown** abiExecutionObject) const override; 
+            IUnknown** abiExecutionObject) const override;
 
         bool TransitionsRequiredForOperator(
             bool isInternalOperator
@@ -132,53 +128,77 @@ namespace Dml
 
         void SetDefaultRoundingMode(AllocatorRoundingMode roundingMode);
 
-        // Waits for flushed work, discards unflushed work, and discards associated references to 
+        // Waits for flushed work, discards unflushed work, and discards associated references to
         // prevent circular references.  Must be the last call on the object before destruction.
-        void Close();   
-            
+        void Close() override;
+
+        void WaitForOutstandingWork();
+
         // Allocate a resource from pools.  Releasing pooledResource returns it to the pool.
         STDMETHOD(AllocatePooledResource)(
             size_t size,
             AllocatorRoundingMode roundingMode,
-            ID3D12Resource **d3dResource, 
+            ID3D12Resource **d3dResource,
             IUnknown* *pooledResource
         ) const noexcept final;
-        
+
         STDMETHOD_(ID3D12Resource*, DecodeResource)(void* allocation) const noexcept final;
 
         std::shared_ptr<onnxruntime::KernelRegistry> GetKernelRegistry() const
         {
             return m_kernelRegistry;
         }
-        
+
         STDMETHOD_(bool, IsMcdmDevice)() const noexcept final;
 
         STDMETHOD_(bool, MetacommandsEnabled)() const noexcept final;
         std::shared_ptr<onnxruntime::IAllocator> GetGpuAllocator();
         std::shared_ptr<onnxruntime::IAllocator> GetCpuInputAllocator();
-        std::shared_ptr<onnxruntime::IAllocator> GetCpuOutputAllocator();
 
-        std::shared_ptr<const winrt::Windows::AI::MachineLearning::implementation::InternalRegistrationInfoMap> 
+        std::shared_ptr<const Windows::AI::MachineLearning::Adapter::InternalRegistrationInfoMap>
         GetInternalRegistrationInfoMap() const;
+
+        void IncreasePartitionKernelPrefixVal() const
+        {
+            m_partitionKernelPrefixVal++;
+        }
+
+        uint64_t GetPartitionKernelPrefixVal() const
+        {
+            return m_partitionKernelPrefixVal;
+        }
+
+        onnxruntime::common::Status OnSessionInitializationEnd();
+        std::vector<onnxruntime::AllocatorPtr> CreatePreferredAllocators();
 
     private:
         void Initialize(ID3D12CommandQueue* queue, ExecutionProvider& executionProvider);
+
+        bool IsNodeSupportedByDml(
+            const onnxruntime::Node& node,
+            const onnxruntime::IExecutionProvider::IKernelLookup& kernel_lookup,
+            uint32_t supportedDeviceDataTypeMask // Each bit corresponds to each DML_TENSOR_DATA_TYPE.
+        ) const;
+
+        void FlushUploadsIfReady() const;
 
         ComPtr<ID3D12Device> m_d3d12Device;
         ComPtr<IDMLDevice> m_dmlDevice;
         bool m_isMcdmDevice = false;
         bool m_areMetacommandsEnabled = true;
+        bool m_native16BitShaderOpsSupported = false;
         std::shared_ptr<ExecutionContext> m_context;
         std::unique_ptr<PooledUploadHeap> m_uploadHeap;
         std::unique_ptr<ReadbackHeap> m_readbackHeap;
         std::shared_ptr<BucketizedBufferAllocator> m_allocator;
         std::shared_ptr<CPUAllocator> m_cpuInputAllocator;
-        std::shared_ptr<CPUAllocator> m_cpuOutputAllocator;
         std::shared_ptr<onnxruntime::KernelRegistry> m_kernelRegistry;
-        std::shared_ptr<const winrt::Windows::AI::MachineLearning::implementation::InternalRegistrationInfoMap> m_internalRegInfoMap;
+        std::shared_ptr<const Windows::AI::MachineLearning::Adapter::InternalRegistrationInfoMap> m_internalRegInfoMap;
         mutable uint64_t m_partitionKernelPrefixVal = 0;
-
         bool m_closed = false;
+        mutable std::chrono::time_point<std::chrono::steady_clock> m_lastUploadFlushTime;
+        static constexpr std::chrono::milliseconds m_batchFlushInterval = std::chrono::milliseconds(10);
+        AllocatorRoundingMode m_defaultRoundingMode = AllocatorRoundingMode::Enabled;
     };
 
     class DataTransfer : public onnxruntime::IDataTransfer
@@ -192,13 +212,12 @@ namespace Dml
 
         onnxruntime::common::Status CopyTensor(const onnxruntime::Tensor& src, onnxruntime::Tensor& dst) const final
         {
-            return CopyTensor(src, dst, 0);
+            return m_impl->CopyTensor(src, dst);
         }
 
-        onnxruntime::common::Status CopyTensor(const onnxruntime::Tensor& src, onnxruntime::Tensor& dst, int exec_queue_id) const final
+        onnxruntime::common::Status CopyTensors(const std::vector<onnxruntime::IDataTransfer::SrcDstPair>& src_dst_pairs) const
         {
-            assert(exec_queue_id == 0);
-            return m_impl->CopyTensor(src, dst);
+            return m_impl->CopyTensors(src_dst_pairs);
         }
 
         bool CanCopy(const OrtDevice& srcDevice, const OrtDevice& dstDevice) const final
@@ -222,54 +241,62 @@ namespace Dml
             ID3D12CommandQueue* commandQueue,
             bool enableMetacommands = true
         );
-        
-        std::unique_ptr<onnxruntime::IDataTransfer> GetDataTransfer() const final
+
+        std::unique_ptr<onnxruntime::IDataTransfer> GetDataTransfer() const final override
         {
             return std::make_unique<DataTransfer>(m_impl.Get());
         }
 
-        const void* GetExecutionHandle() const noexcept final
+        const void* GetExecutionHandle() const noexcept final override
         {
             return m_impl.Get();
         }
 
-        std::shared_ptr<onnxruntime::KernelRegistry> GetKernelRegistry() const final
+        std::shared_ptr<onnxruntime::KernelRegistry> GetKernelRegistry() const final override
         {
             return m_impl->GetKernelRegistry();
         }
 
         std::vector<std::unique_ptr<onnxruntime::ComputeCapability>>
             GetCapability(const onnxruntime::GraphViewer& graph,
-                const std::vector<const onnxruntime::KernelRegistry*>& kernel_registries) const final;
+                const onnxruntime::IExecutionProvider::IKernelLookup& kernel_lookup) const final override;
 
-        // Not to be confused with IExecutionProvider::Sync() const.  The DML provider handles 
-        // synchronization when copying inputs and outputs, therefore doesn't override the 
-        // default ORT method, which does nothin.
-        onnxruntime::common::Status WaitForGpuCompletion()
+        onnxruntime::common::Status OnSessionInitializationEnd() override
         {
-            return m_impl->WaitForGpuCompletion();
+            return m_impl->OnSessionInitializationEnd();
+        }
+
+        virtual onnxruntime::Status Sync() const final override
+        {
+            // Completely wait until the device has completed all preceding tasks.
+            // The application could have called SynchronizeBoundOutputs().
+            m_impl->WaitForOutstandingWork();
+            return Status::OK();
+        }
+
+        virtual onnxruntime::Status OnRunEnd(bool /*sync_stream*/) final override
+        {
+            // Flush any pending work to the GPU, but don't block for completion, permitting it
+            // to overlap other work.
+            m_impl->Flush();
+            return Status::OK();
         }
 
         void Flush()
         {
             return m_impl->Flush();
-        }    
-        
+        }
+
         void SetDefaultRoundingMode(AllocatorRoundingMode roundingMode)
         {
             return m_impl->SetDefaultRoundingMode(roundingMode);
         }
-        
+
         void ReleaseCompletedReferences()
         {
             return m_impl->ReleaseCompletedReferences();
         }
 
-        void TrimUploadHeap()
-        {
-            m_impl->TrimUploadHeap();
-        }
-        
         ExecutionProviderImpl* GetImpl()
         {
             return m_impl.Get();
@@ -283,6 +310,11 @@ namespace Dml
         void MetacommandsEnabled()
         {
             m_impl->MetacommandsEnabled();
+        }
+
+        virtual std::vector<onnxruntime::AllocatorPtr> CreatePreferredAllocators() override
+        {
+            return m_impl->CreatePreferredAllocators();
         }
 
     private:

@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 #include "flatten.h"
-#include "core/providers/common.h"
 
 namespace onnxruntime {
 namespace cuda {
@@ -12,7 +11,7 @@ ONNX_OPERATOR_VERSIONED_KERNEL_EX(
     kOnnxDomain,
     1, 8,
     kCudaExecutionProvider,
-    KernelDefBuilder()
+    (*KernelDefBuilder::Create())
         .Alias(0, 0)
         .TypeConstraint("T", DataTypeImpl::AllFixedSizeTensorTypes()),
     Flatten);
@@ -22,18 +21,28 @@ ONNX_OPERATOR_VERSIONED_KERNEL_EX(
     kOnnxDomain,
     9, 10,
     kCudaExecutionProvider,
-    KernelDefBuilder()
+    (*KernelDefBuilder::Create())
         .Alias(0, 0)
         .TypeConstraint("T", DataTypeImpl::AllFixedSizeTensorTypes()),
     Flatten);
 
 // explicitly support negative axis
+ONNX_OPERATOR_VERSIONED_KERNEL_EX(
+    Flatten,
+    kOnnxDomain,
+    11, 12,
+    kCudaExecutionProvider,
+    (*KernelDefBuilder::Create())
+        .Alias(0, 0)
+        .TypeConstraint("T", DataTypeImpl::AllFixedSizeTensorTypes()),
+    Flatten);
+
 ONNX_OPERATOR_KERNEL_EX(
     Flatten,
     kOnnxDomain,
-    11,
+    13,
     kCudaExecutionProvider,
-    KernelDefBuilder()
+    (*KernelDefBuilder::Create())
         .Alias(0, 0)
         .TypeConstraint("T", DataTypeImpl::AllFixedSizeTensorTypes()),
     Flatten);
@@ -50,13 +59,13 @@ Status Flatten::ComputeInternal(OpKernelContext* ctx) const {
 
   ORT_ENFORCE(gsl::narrow_cast<int64_t>(X_shape.NumDimensions()) >= axis, "The rank of input tensor must be >= axis");
 
-  Tensor* Y = ctx->Output(0, TensorShape({X_shape.SizeToDimension(axis), X_shape.SizeFromDimension(axis)}));
-  //If source and target pointers are not equal (non-inplace operation), we need to copy the data.
+  Tensor* Y = ctx->Output(0, {X_shape.SizeToDimension(axis), X_shape.SizeFromDimension(axis)});
+  // If source and target pointers are not equal (non-inplace operation), we need to copy the data.
   const void* source = X->DataRaw();
   void* target = Y->MutableDataRaw();
   if (target != source) {
     CUDA_RETURN_IF_ERROR(cudaMemcpyAsync(target, source, X_shape.Size() * X->DataType()->Size(),
-                                         cudaMemcpyDeviceToDevice));
+                                         cudaMemcpyDeviceToDevice, Stream(ctx)));
   }
 
   return Status::OK();

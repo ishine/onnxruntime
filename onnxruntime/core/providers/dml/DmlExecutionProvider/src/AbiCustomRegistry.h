@@ -14,7 +14,7 @@ namespace WRL
         >;
 }
 
-namespace winrt::Windows::AI::MachineLearning::implementation
+namespace Windows::AI::MachineLearning::Adapter
 { 
 
 using namespace Microsoft::WRL;
@@ -41,7 +41,6 @@ class AbiCustomRegistry : public WRL::Base<IMLOperatorRegistry, IMLOperatorRegis
         bool canAliasFirstInput,
         bool supportsGraph,
         const uint32_t* requiredInputCountForGraph = nullptr,
-        bool requiresFloatFormatsForGraph = false,
         _In_reads_(constantCpuInputCount) const uint32_t* requiredConstantCpuInputs = nullptr,
         uint32_t constantCpuInputCount = 0) const noexcept override;
 
@@ -110,4 +109,4 @@ class AbiCustomRegistry : public WRL::Base<IMLOperatorRegistry, IMLOperatorRegis
 
 };
 
-}    // namespace winrt::Windows::AI::MachineLearning::implementation
+}    // namespace Windows::AI::MachineLearning::Adapter

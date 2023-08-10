@@ -3,7 +3,7 @@
 
 #include "gtest/gtest.h"
 
-#include "gsl/gsl"
+#include "core/common/gsl.h"
 
 #include "test/providers/provider_test_utils.h"
 
@@ -62,7 +62,12 @@ void WhereBroadcastTest(const T& x_value, const T& y_value) {
     }
     test.AddOutput<T>("output", {3, 3, 3}, result);
 
+#if defined(OPENVINO_CONFIG_GPU_FP32) || defined(OPENVINO_CONFIG_GPU_FP16)
+    test.Run(OpTester::ExpectResult::kExpectSuccess, "",
+             {kOpenVINOExecutionProvider});  // OpenVINO: Disabled due to failure for GPU
+#else
     test.Run();
+#endif
   }
 
   {
@@ -81,13 +86,19 @@ void WhereBroadcastTest(const T& x_value, const T& y_value) {
     }
     test.AddOutput<T>("output", {3, 3, 3}, result);
 
+#if defined(OPENVINO_CONFIG_GPU_FP32) || defined(OPENVINO_CONFIG_GPU_FP16)
+    test.Run(OpTester::ExpectResult::kExpectSuccess, "",
+             {kOpenVINOExecutionProvider});  // OpenVINO: Disabled due to failure for GPU
+#else
     test.Run();
+#endif
   }
 }
 }  // namespace
 
 TEST(WhereOpTest, BasicNumeric) {
   WhereBasicNumericTest<float>();
+  WhereBasicNumericTest<double>();
 }
 
 TEST(WhereOpTest, BasicString) {
@@ -106,6 +117,7 @@ TEST(WhereOpTest, BasicString) {
 
 TEST(WhereOpTest, Broadcast) {
   WhereBroadcastTest<float>(1.0f, 0.0f);
+  WhereBroadcastTest<double>(1.0f, 0.0f);
   WhereBroadcastTest<std::string>("true", "false");
 }
 
@@ -119,8 +131,20 @@ TEST(WhereOpTest, BroadcastDimWithZero) {
 
   test.AddOutput<int64_t>("output", {0, 3}, {});
 
-  // exclude NGraph as this isn't handled by that EP
-  test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kNGraphExecutionProvider});
+  test.Run();
 }
+
+TEST(WhereOpTest, BroadcastWithScalar) {
+  OpTester test{kOpName, kOpVersion};
+
+  test.AddInput<bool>("condition", {3}, {true, false, true});
+  test.AddInput<int64_t>("X", {1, 3}, {1, 2, 3});
+  test.AddInput<int64_t>("Y", {}, {1});
+
+  test.AddOutput<int64_t>("output", {1, 3}, {1, 1, 3});
+
+  test.Run();
+}
+
 }  // namespace test
 }  // namespace onnxruntime

@@ -84,7 +84,7 @@ class IfOpTester : public OpTester {
         *split_attribute->Add() = 1;  // split "unevenly" to create different shapes across the "then" and "else" branches
         *split_attribute->Add() = 2;
 
-        split_node.AddAttribute("split", attr_proto);
+        split_node.AddAttributeProto(std::move(attr_proto));
       }
     }
 
@@ -338,6 +338,250 @@ TEST(If, Opset11ThenAndElseBranchesProduceDifferentOutputShapes) {
 
   RunTest(false, options, false, OpTester::ExpectResult::kExpectSuccess, "", 11);
 }
+
+// This is to test an "If" node with just "Constant" nodes in the "then" and "else" conditional branches
+class IfOpTesterOnlyConstantNodesInConditionalBranches : public OpTester {
+ public:
+  IfOpTesterOnlyConstantNodesInConditionalBranches() : OpTester("If") {
+  }
+
+ protected:
+  void AddNodes(onnxruntime::Graph& graph,
+                std::vector<onnxruntime::NodeArg*>& graph_input_defs,
+                std::vector<onnxruntime::NodeArg*>& graph_output_defs,
+                std::vector<std::function<void(onnxruntime::Node& node)>>& /*add_attribute_funcs*/) override {
+    // Graph inputs are 0:Cond for If
+    ASSERT_EQ(graph_input_defs.size(), 1u);
+    ASSERT_EQ(graph_output_defs.size(), 1u);
+
+    NodeArg* if_cond_input = graph_input_defs[0];
+
+    std::vector<NodeArg*> inputs;
+    std::vector<NodeArg*> outputs;
+
+    // add If node
+    {
+      inputs = {if_cond_input};
+      outputs = {graph_output_defs[0]};
+
+      auto& if_node = graph.AddNode("if", "If", "If node", inputs, outputs);
+
+      auto CreateSubgraphWithConstantNode = [](bool then_branch, float value, std::vector<NodeArg*> outputs) {
+        Model model_then(then_branch ? "Then" : "Else", false, DefaultLoggingManager().DefaultLogger());
+        auto& graph_then = model_then.MainGraph();
+        auto& then_constant_node = graph_then.AddNode(
+            then_branch ? "Constant_Then" : "Constant_Else",
+            "Constant",
+            then_branch ? "Constant_Then" : "Constant_Else", {}, outputs);
+
+        AttributeProto then_constant_attr_proto;
+        then_constant_attr_proto.set_name("value");
+        then_constant_attr_proto.set_type(AttributeProto_AttributeType_TENSOR);
+        auto* then_constant_attr_tensor_proto = then_constant_attr_proto.mutable_t();
+        then_constant_attr_tensor_proto->set_data_type(TensorProto_DataType_FLOAT);
+        then_constant_attr_tensor_proto->add_dims(1);
+        then_constant_attr_tensor_proto->add_float_data(value);  // Constant value of 10.f
+
+        then_constant_node.AddAttributeProto(std::move(then_constant_attr_proto));
+
+        auto status_then = graph_then.Resolve();
+        EXPECT_EQ(status_then, Status::OK());
+
+        auto& graphproto_then = graph_then.ToGraphProto();
+        return graphproto_then;
+      };
+
+      if_node.AddAttribute("then_branch", CreateSubgraphWithConstantNode(true, 10.f, outputs));
+      if_node.AddAttribute("else_branch", CreateSubgraphWithConstantNode(false, 1000.f, outputs));
+    }
+  }
+};
+
+// Context: Github issue #3900
+TEST(If, ConditionalBranchesOnlyContainConstantNodes_ThenBranchExecution) {
+  IfOpTesterOnlyConstantNodesInConditionalBranches test;
+  test.AddInput<bool>("If_input", {1}, {true});
+  test.AddOutput<float>("If_output", {1}, {10.f});
+  test.Run();
+}
+
+// Context: Github issue #3900
+TEST(If, ConditionalBranchesOnlyContainConstantNodes_ElseBranchExecution) {
+  IfOpTesterOnlyConstantNodesInConditionalBranches test;
+  test.AddInput<bool>("If_input", {1}, {false});
+  test.AddOutput<float>("If_output", {1}, {1000.f});
+  test.Run();
+}
+
+// This is to test an "If" node with just a "SequenceEmpty" node in the "then" and "else" conditional branches
+class IfOpTesterWithSequencesAsOutput : public OpTester {
+ public:
+  IfOpTesterWithSequencesAsOutput() : OpTester("If", 13) {
+  }
+
+ protected:
+  void AddNodes(onnxruntime::Graph& graph,
+                std::vector<onnxruntime::NodeArg*>& graph_input_defs,
+                std::vector<onnxruntime::NodeArg*>& graph_output_defs,
+                std::vector<std::function<void(onnxruntime::Node& node)>>& /*add_attribute_funcs*/) override {
+    // Graph inputs are 0:Cond
+    ASSERT_EQ(graph_input_defs.size(), 1u);
+    ASSERT_EQ(graph_output_defs.size(), 1u);
+
+    NodeArg* if_cond_input = graph_input_defs[0];
+
+    std::vector<NodeArg*> inputs;
+    std::vector<NodeArg*> outputs;
+
+    // add If node
+    {
+      inputs = {if_cond_input};
+      outputs = {graph_output_defs[0]};
+
+      auto& if_node = graph.AddNode("if", "If", "If node", inputs, outputs);
+
+      auto CreateSubgraphWithSequenceEmptyNode = [](bool then_branch, std::vector<NodeArg*> outputs) {
+        Model subgraph(then_branch ? "Then" : "Else", false, DefaultLoggingManager().DefaultLogger());
+        auto& graph = subgraph.MainGraph();
+
+        // By default, the SequenceEmpty node will create an empty sequence of float tensors
+        ORT_IGNORE_RETURN_VALUE(graph.AddNode(
+            then_branch ? "SequenceEmpty_Then" : "SequenceEmpty_Else",
+            "SequenceEmpty",
+            then_branch ? "SequenceEmpty_Then" : "SequenceEmpty_Else", {}, outputs));
+
+        auto status = graph.Resolve();
+        EXPECT_EQ(status, Status::OK());
+
+        auto& graphproto = graph.ToGraphProto();
+        return graphproto;
+      };
+
+      if_node.AddAttribute("then_branch", CreateSubgraphWithSequenceEmptyNode(true, outputs));
+      if_node.AddAttribute("else_branch", CreateSubgraphWithSequenceEmptyNode(false, outputs));
+    }
+  }
+};
+
+// opset-13 allows sequences as outputs for 'If' nodes
+TEST(If, TestIfWithSequencesAsOutput) {
+  IfOpTesterWithSequencesAsOutput test;
+  test.AddInput<bool>("If_input", {1}, {true});
+  SeqTensors<float> seq;  // empty sequence of float tensors
+  test.AddSeqOutput("If_output", seq);
+  test.Run();
+}
+
+#if !defined(DISABLE_OPTIONAL_TYPE)
+// This is to test an "If" node with just an "Identity" node in the "then" and "else" conditional branches
+class IfOpTesterWithOptionalTypeAsOutput : public OpTester {
+ public:
+  IfOpTesterWithOptionalTypeAsOutput() : OpTester("If", 16) {
+  }
+
+ protected:
+  void AddNodes(onnxruntime::Graph& graph,
+                std::vector<onnxruntime::NodeArg*>& graph_input_defs,
+                std::vector<onnxruntime::NodeArg*>& graph_output_defs,
+                std::vector<std::function<void(onnxruntime::Node& node)>>& /*add_attribute_funcs*/) override {
+    // Graph inputs are 0:Cond
+    ASSERT_EQ(graph_input_defs.size(), 2u);
+    ASSERT_EQ(graph_output_defs.size(), 1u);
+
+    NodeArg* identity_input = graph_input_defs[1];
+
+    std::vector<NodeArg*> if_inputs = {graph_input_defs[0]};
+    std::vector<NodeArg*> if_outputs = {graph_output_defs[0]};
+
+    auto CreateSubgraphWithIdentityNode = [&identity_input, &if_outputs](bool then_branch) {
+      std::unordered_map<std::string, int> domain_to_version;
+      domain_to_version.insert({"", 16});  // Opset 16 model
+
+      Model subgraph(then_branch ? "Then_subgraph" : "Else_subgraph", false, ModelMetaData(), PathString(), {},
+                     domain_to_version, std::vector<ONNX_NAMESPACE::FunctionProto>{},
+                     DefaultLoggingManager().DefaultLogger());
+
+      auto& graph = subgraph.MainGraph();
+
+      auto& pass_through_identity_input = graph.GetOrCreateNodeArg("pass_through_identity_input",
+                                                                   identity_input->TypeAsProto());
+      graph.AddOuterScopeNodeArg("pass_through_identity_input");
+
+      graph.AddNode(
+          then_branch ? "Identity_Then" : "Identity_Else",
+          "Identity",
+          then_branch ? "Identity_Then" : "Identity_Else", {&pass_through_identity_input}, if_outputs);
+
+      auto status = graph.Resolve();
+      EXPECT_EQ(status, Status::OK());
+
+      auto& graphproto = graph.ToGraphProto();
+      return graphproto;
+    };
+
+    // If node
+    {
+      auto& if_node = graph.AddNode("if", "If", "If node", if_inputs, if_outputs);
+
+      if_node.AddAttribute("then_branch", CreateSubgraphWithIdentityNode(true));
+      if_node.AddAttribute("else_branch", CreateSubgraphWithIdentityNode(false));
+    }
+
+    // add Identity node so if_graph_input_0 comes from graph inputs
+    {
+      auto inputs = {identity_input};
+      auto outputs = {&graph.GetOrCreateNodeArg("pass_through_identity_input", identity_input->TypeAsProto())};
+      graph.AddNode("identity", "Identity", "Pass if input through from graph inpu.", inputs, outputs);
+    }
+  }
+};
+
+TEST(If, TestIfWithOptionalTypeTensorAsOutput) {
+  // CASE 1: Optional tensor + none
+  {
+    IfOpTesterWithOptionalTypeAsOutput test;
+    test.AddInput<bool>("If_input", {1}, {true});
+    test.AddOptionalTypeTensorInput<float>("A", {}, nullptr);                            // None
+    test.AddOptionalTypeTensorOutput<float>("Y", {}, nullptr);                           // None
+    test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});  // TensorRT: opset 16 is not supported yet
+  }
+
+  // CASE 2: Optional tensor + non-none
+  {
+    IfOpTesterWithOptionalTypeAsOutput test;
+    test.AddInput<bool>("If_input", {1}, {true});
+    std::initializer_list<float> data = {-1.0856307f, 0.99734545f};
+    test.AddOptionalTypeTensorInput<float>("A", {2}, &data);                             // Non-None
+    test.AddOptionalTypeTensorOutput<float>("Y", {2}, &data);                            // Non-None
+    test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});  // TensorRT: opset 16 is not supported yet
+  }
+
+  // CASE 3: Optional tensor sequence + none
+  {
+    IfOpTesterWithOptionalTypeAsOutput test;
+    test.AddInput<bool>("If_input", {1}, {true});
+    test.AddOptionalTypeSeqInput<float>("A", nullptr);                                   // None
+    test.AddOptionalTypeSeqOutput<float>("Y", nullptr);                                  // None
+    test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});  // TensorRT: opset 16 is not supported yet
+  }
+
+  // CASE 4: Optional tensor sequence + non-none
+  {
+    IfOpTesterWithOptionalTypeAsOutput test;
+    test.AddInput<bool>("If_input", {1}, {true});
+
+    SeqTensors<float> seq;
+    seq.AddTensor({1}, {1.f});
+    seq.AddTensor({1}, {1.f});
+    seq.AddTensor({1}, {1.f});
+
+    test.AddOptionalTypeSeqInput<float>("A", &seq);                                      // Non-None
+    test.AddOptionalTypeSeqOutput<float>("Y", &seq);                                     // Non-None
+    test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});  // TensorRT: opset 16 is not supported yet
+  }
+}
+
+#endif
 
 }  // namespace test
 }  // namespace onnxruntime

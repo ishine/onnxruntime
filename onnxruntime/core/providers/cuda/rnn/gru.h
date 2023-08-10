@@ -4,7 +4,7 @@
 #pragma once
 
 #include "cudnn_rnn_base.h"
-#include "gsl/gsl"
+#include "core/common/gsl.h"
 #include "core/providers/cuda/cuda_common.h"
 #include <cudnn.h>
 
@@ -24,7 +24,7 @@ class GRU final : public CudnnRnnBase<T> {
     // ONNX B layout is Wbzrh, Rbzrh, mapping to RNNLinLayerMatrixParams
     // the linLayerID is 1, 0, 2, 4, 3, 5, we can reuse it from W_lin_layer_id & R_lin_layer_id
 
-    CudnnRnnBase<T>::CacheCudnnRnnWeights(info);
+    ORT_THROW_IF_ERROR(CudnnRnnBase<T>::CacheCudnnRnnWeights(info));
   }
 };
 

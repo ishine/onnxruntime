@@ -8,13 +8,6 @@
 
 namespace onnxruntime {
 
-enum CUDAStreamType : int {
-  kCudaStreamDefault = 0,
-  kCudaStreamCopyIn,
-  kCudaStreamCopyOut,
-  kTotalCudaStreams,
-};
-
 class GPUDataTransfer : public IDataTransfer {
  public:
   GPUDataTransfer();
@@ -22,15 +15,10 @@ class GPUDataTransfer : public IDataTransfer {
 
   bool CanCopy(const OrtDevice& src_device, const OrtDevice& dst_device) const override;
 
-  common::Status CopyTensor(const Tensor& src, Tensor& dst, int exec_queue_id) const override;
-
-  cudaStream_t GetStream(int queue_id) const {
-    ORT_ENFORCE(queue_id >= 0 && queue_id < kTotalCudaStreams);
-    return streams_[queue_id];
-  }
-
- private:
-  cudaStream_t streams_[kTotalCudaStreams];
+  // Dumpen MSVC warning about not fully overriding
+  using IDataTransfer::CopyTensor;
+  common::Status CopyTensor(const Tensor& src, Tensor& dst) const override;
+  common::Status CopyTensorAsync(const Tensor& src, Tensor& dst, Stream& stream) const override;
 };
 
 }  // namespace onnxruntime

@@ -19,13 +19,12 @@ public:
         std::vector<DimensionType> dataDimensions = tensorShapeDescription.GetInputTensorShape(0);
         std::vector<DimensionType> indicesDimensions = tensorShapeDescription.GetInputTensorShape(1);
         std::vector<DimensionType> updatesDimensions = tensorShapeDescription.GetInputTensorShape(2);
-        std::vector<DimensionType> outputDimensions = tensorShapeDescription.GetInputTensorShape(0);
+        std::vector<DimensionType> outputDimensions = tensorShapeDescription.GetOutputTensorShape(0);
         ML_CHECK_VALID_ARGUMENT(dataDimensions == outputDimensions);
         ML_CHECK_VALID_ARGUMENT(indicesDimensions == updatesDimensions);
         ML_CHECK_VALID_ARGUMENT(dataDimensions.size() == indicesDimensions.size());
-        ML_CHECK_VALID_ARGUMENT(dataDimensions.size() <= OperatorHelper::NchwDimensionCount);
 
-        // When the indices tensor is empty, Scatter is basically Identity. But since DML doesn't support empty or null
+        // When the indices tensor is empty, Scatter is basically Identity. But since DML doesn't yet support empty
         // tensors, we have to special-case it outside of DML.
         if (OperatorHelper::ContainsEmptyDimensions(indicesDimensions))
         {
@@ -38,13 +37,10 @@ public:
             assert(inputDescs.size() == 1);
             assert(outputDescs.size() == 1);
 
-            DML_SCALE_BIAS scaleBias = {};
-            scaleBias.Scale = 1.0f;
-
             DML_ELEMENT_WISE_IDENTITY_OPERATOR_DESC operatorDesc = {};
             operatorDesc.InputTensor = &inputDescs[0];
             operatorDesc.OutputTensor = outputDescs.data();
-            operatorDesc.ScaleBias = &scaleBias;
+            operatorDesc.ScaleBias = nullptr;
 
             DML_OPERATOR_DESC opDesc = { DML_OPERATOR_ELEMENT_WISE_IDENTITY, &operatorDesc };
             SetDmlOperatorDesc(opDesc, kernelCreationContext);
@@ -57,8 +53,6 @@ public:
             std::vector<DML_TENSOR_DESC> outputDescs = GetDmlOutputDescs();
             assert(inputDescs.size() == 3);
             assert(outputDescs.size() == 1);
-
-            m_inputTensorDescs[1].ForceUnsignedDataType();
 
             // Read the axis.
             int onnxAxis = kernelCreationContext.GetOptionalAttribute<int>(AttrName::Axis, 0);
@@ -77,6 +71,63 @@ public:
     }
 };
 
-DML_OP_DEFINE_CREATION_FUNCTION(Scatter, DmlOperatorScatter);
+class DmlOperatorScatterNd : public DmlOperator
+{
+public:
+    DmlOperatorScatterNd(const MLOperatorKernelCreationContext& kernelCreationContext)
+    :   DmlOperator(kernelCreationContext)
+    {
+        ML_CHECK_VALID_ARGUMENT(kernelCreationContext.GetInputCount() == 3, "ScatterND expects 3 inputs.");
+        ML_CHECK_VALID_ARGUMENT(kernelCreationContext.GetOutputCount() == 1, "ScatterND expects 1 output.");
+
+        auto tensorShapeDescription = kernelCreationContext.GetTensorShapeDescription();
+        std::vector<DimensionType> dataDimensions = tensorShapeDescription.GetInputTensorShape(0);
+        std::vector<DimensionType> indicesDimensions = tensorShapeDescription.GetInputTensorShape(1);
+        std::vector<DimensionType> updatesDimensions = tensorShapeDescription.GetInputTensorShape(2);
+        std::vector<DimensionType> outputDimensions = tensorShapeDescription.GetOutputTensorShape(0);
+        ML_CHECK_VALID_ARGUMENT(dataDimensions == outputDimensions);
+
+        size_t dimensionCountMax = std::max({dataDimensions.size(), updatesDimensions.size(), indicesDimensions.size(), outputDimensions.size()});
+        DmlOperator::Initialize(kernelCreationContext, gsl::narrow_cast<uint32_t>(dimensionCountMax));
+
+        std::vector<DML_TENSOR_DESC> inputDescs = GetDmlInputDescs();
+        std::vector<DML_TENSOR_DESC> outputDescs = GetDmlOutputDescs();
+        assert(inputDescs.size() == 3);
+        assert(outputDescs.size() == 1);
+
+        DML_SCATTER_ND_OPERATOR_DESC operatorDesc = {};
+        operatorDesc.InputTensor = &inputDescs[0];
+        operatorDesc.IndicesTensor = &inputDescs[1];
+        operatorDesc.UpdatesTensor = &inputDescs[2];
+        operatorDesc.OutputTensor = outputDescs.data();
+        operatorDesc.InputDimensionCount = static_cast<uint32_t>(dataDimensions.size());
+        operatorDesc.IndicesDimensionCount = static_cast<uint32_t>(indicesDimensions.size());
+
+        DML_OPERATOR_DESC opDesc = { DML_OPERATOR_SCATTER_ND, &operatorDesc };
+        SetDmlOperatorDesc(opDesc, kernelCreationContext);
+    }
+};
+
+void CALLBACK QueryScatter(IMLOperatorSupportQueryContextPrivate* context, bool* isSupported)
+{
+    *isSupported = false;
+
+    MLOperatorAttributes attributes(context);
+
+    // DML does not support reduction.
+    std::string reduction = attributes.GetOptionalAttribute<std::string>(AttrName::Reduction, "none");
+    if (reduction != "none")
+    {
+        return;
+    }
+
+    *isSupported = true;
+}
+
+DML_OP_DEFINE_CREATION_FUNCTION(Scatter9, DmlOperatorScatter);
+DML_OP_DEFINE_CREATION_FUNCTION(Scatter11, DmlOperatorScatter);
+DML_OP_DEFINE_CREATION_FUNCTION(Scatter13, DmlOperatorScatter);
+DML_OP_DEFINE_CREATION_FUNCTION(ScatterElements, DmlOperatorScatter);
+DML_OP_DEFINE_CREATION_FUNCTION(ScatterND, DmlOperatorScatterNd);
 
 } // namespace Dml

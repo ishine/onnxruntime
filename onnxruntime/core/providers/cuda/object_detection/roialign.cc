@@ -1,5 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved. 
-// Licensed under the MIT License. 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
 
 #include "roialign.h"
 #include "roialign_impl.h"
@@ -14,8 +14,8 @@ namespace cuda {
       10,                                                                \
       T,                                                                 \
       kCudaExecutionProvider,                                            \
-      KernelDefBuilder()                                                 \
-          .TypeConstraint("T", DataTypeImpl::GetTensorType<T>()) \
+      (*KernelDefBuilder::Create())                                      \
+          .TypeConstraint("T1", DataTypeImpl::GetTensorType<T>())        \
           .TypeConstraint("T2", DataTypeImpl::GetTensorType<int64_t>()), \
       RoiAlign<T>);
 
@@ -40,13 +40,14 @@ Status RoiAlign<T>::ComputeInternal(OpKernelContext* context) const {
     return status;
   }
 
-  auto& Y = *context->Output(0, {num_rois, x_dims[1], this->output_height_, this->output_width_});
+  Tensor& Y = *context->Output(0, {num_rois, x_dims[1], this->output_height_, this->output_width_});
   int64_t output_size = Y.Shape().Size();
 
   if (output_size > 0) {
     RoiAlignImpl(
+        Stream(context),
         output_size,  // num threads
-        reinterpret_cast<const typename ToCudaType<T>::MappedType*>(X_ptr->template Data<T>()),
+        reinterpret_cast<const typename ToCudaType<T>::MappedType*>(X_ptr->Data<T>()),
         ToCudaType<T>::FromFloat(this->spatial_scale_),
         x_dims[1],  // num channels
         x_dims[2],  // height
@@ -54,12 +55,12 @@ Status RoiAlign<T>::ComputeInternal(OpKernelContext* context) const {
         this->output_height_,
         this->output_width_,
         this->sampling_ratio_,
-        reinterpret_cast<const typename ToCudaType<T>::MappedType*>(rois_ptr->template Data<T>()),
+        reinterpret_cast<const typename ToCudaType<T>::MappedType*>(rois_ptr->Data<T>()),
         num_roi_cols,
-        reinterpret_cast<typename ToCudaType<T>::MappedType*>(Y.template MutableData<T>()),
+        reinterpret_cast<typename ToCudaType<T>::MappedType*>(Y.MutableData<T>()),
         this->mode_ == RoiAlignMode::avg,
-        batch_indices_ptr->template Data<int64_t>()
-    );
+        this->half_pixel_,
+        batch_indices_ptr->Data<int64_t>());
   }
 
   return Status::OK();
@@ -71,7 +72,7 @@ Status RoiAlign<T>::ComputeInternal(OpKernelContext* context) const {
 
 SPECIALIZED_COMPUTE(float)
 SPECIALIZED_COMPUTE(double)
-//SPECIALIZED_COMPUTE(MLFloat16)
+// SPECIALIZED_COMPUTE(MLFloat16)
 
 }  // namespace cuda
 };  // namespace onnxruntime

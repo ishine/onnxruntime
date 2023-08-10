@@ -20,8 +20,21 @@ public:
         PoolingHelperBase(kernelInfo, kernelInfo.GetTensorShapeDescription(), useGlobalPooling),
         m_function(function)
     {
-        DmlOperator::Initialize(kernelInfo);
+        const bool hasDilations =
+            std::any_of(
+                m_kernel.dilations,
+                m_kernel.dilations + m_kernel.spatialDimensionCount,
+                [](auto d) {return d != 1; }
+            );
+        const bool hasOutputIndices = (kernelInfo.GetOutputCount() > 1 && kernelInfo.IsOutputValid(1));
+        std::vector<std::optional<uint32_t>> kernelOutputIndices = {0};
 
+        if (function == DML_OPERATOR_MAX_POOLING2 && (hasOutputIndices || hasDilations))
+        {
+            kernelOutputIndices.emplace_back(1);
+        }
+        DmlOperator::Initialize(kernelInfo, std::nullopt, kernelOutputIndices);
+        
         std::vector<DML_TENSOR_DESC> inputDescs = GetDmlInputDescs();
         std::vector<DML_TENSOR_DESC> outputDescs = GetDmlOutputDescs();
         ML_CHECK_VALID_ARGUMENT(inputDescs.size() >= 1, "MaxPool input count must be >=1.");
@@ -30,17 +43,8 @@ public:
         assert(m_kernel.spatialDimensionCount <= ARRAYSIZE(m_kernel.windowSize));
 
         // The below attributes are temporarily not supported:
-        int ceilMode = kernelInfo.GetOptionalAttribute<int>(AttrName::CeilMode, 0);
-        THROW_HR_IF(E_NOTIMPL, ceilMode != 0);
-
         int storageOrder = kernelInfo.GetOptionalAttribute<int>(AttrName::StorageOrder, 0);
-        THROW_HR_IF(E_NOTIMPL, storageOrder != 0);
-
-        auto dilations = kernelInfo.GetOptionalAttributeVectorInt32(AttrName::Dilations);
-        for (int dilation : dilations)
-        {
-            THROW_HR_IF(E_NOTIMPL, dilation != 1);
-        }
+        ORT_THROW_HR_IF(E_NOTIMPL, storageOrder != 0);
 
         // DML requires that DimensionCount be equal to Input.DimCount - 2 for Pooling
         uint32_t expectedSpatialDimCount = m_inputTensorDescs[0].GetDimensionCount() - 2;
@@ -61,6 +65,9 @@ public:
 
                 m_kernel.endPadding[i + shift] = m_kernel.endPadding[i];
                 m_kernel.endPadding[i] = 0;
+
+                m_kernel.dilations[i + shift] = m_kernel.dilations[i];
+                m_kernel.dilations[i] = 1;
             }
 
             m_kernel.spatialDimensionCount = expectedSpatialDimCount;
@@ -101,11 +108,19 @@ public:
             }
             case DML_OPERATOR_MAX_POOLING:
             case DML_OPERATOR_MAX_POOLING1:
+            case DML_OPERATOR_MAX_POOLING2:
             {
-                if (outputDescs.size() > 1 && outputDescs[1].Desc != nullptr)
+                if (hasOutputIndices || hasDilations)
                 {
-                    DML_MAX_POOLING1_OPERATOR_DESC desc = {};
-                    desc.OutputIndicesTensor = &outputDescs[1];
+                    DML_MAX_POOLING2_OPERATOR_DESC desc = {};
+
+                    if (hasOutputIndices)
+                    {
+                        m_outputTensorDescs[1].ForceUnsignedDataType(); // MaxPool accepts uint32_t/uint64_t.
+                        desc.OutputIndicesTensor = &outputDescs[1];
+                    }
+
+                    desc.Dilations = m_kernel.dilations;
                     SetOpDesc(desc);
                 }
                 else
@@ -134,18 +149,11 @@ public:
     }
 };
 
-void QueryMaxPool(IMLOperatorSupportQueryContextPrivate* context, bool *isSupported)
+void CALLBACK QueryMaxPool(IMLOperatorSupportQueryContextPrivate* context, bool* isSupported)
 {
     *isSupported = false;
     
     MLOperatorAttributes attributes(context);
-
-    // The below attributes are temporarily not supported:
-    int ceilMode = attributes.GetOptionalAttribute<int>(AttrName::CeilMode, 0);
-    if (ceilMode != 0)
-    {
-        return;
-    }
 
     int storageOrder = attributes.GetOptionalAttribute<int>(AttrName::StorageOrder, 0);
     if (storageOrder != 0)
@@ -153,21 +161,12 @@ void QueryMaxPool(IMLOperatorSupportQueryContextPrivate* context, bool *isSuppor
         return;
     }
 
-    auto dilations = attributes.GetOptionalAttributeVectorInt32(AttrName::Dilations);
-    for (int dilation : dilations)
-    {
-        if (dilation != 1)
-        {
-            return;
-        }
-    }
-
     *isSupported = true;
 }
 
 DML_OP_DEFINE_CREATION_FUNCTION(AveragePool,           DmlOperatorPoolingTemplate<DML_OPERATOR_AVERAGE_POOLING, false>);
 DML_OP_DEFINE_CREATION_FUNCTION(GlobalAveragePool,     DmlOperatorPoolingTemplate<DML_OPERATOR_AVERAGE_POOLING, true>);
-DML_OP_DEFINE_CREATION_FUNCTION(MaxPool,               DmlOperatorPoolingTemplate<DML_OPERATOR_MAX_POOLING1, false>);
+DML_OP_DEFINE_CREATION_FUNCTION(MaxPool,               DmlOperatorPoolingTemplate<DML_OPERATOR_MAX_POOLING2, false>);
 DML_OP_DEFINE_CREATION_FUNCTION(GlobalMaxPool,         DmlOperatorPoolingTemplate<DML_OPERATOR_MAX_POOLING, true>);
 DML_OP_DEFINE_CREATION_FUNCTION(LpPool,                DmlOperatorPoolingTemplate<DML_OPERATOR_LP_POOLING, false>);
 DML_OP_DEFINE_CREATION_FUNCTION(GlobalLpPool,          DmlOperatorPoolingTemplate<DML_OPERATOR_LP_POOLING, true>);

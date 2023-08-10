@@ -6,7 +6,7 @@
 #include "core/common/common.h"
 #include "core/framework/op_kernel.h"
 
-#include "gsl/gsl"
+#include "core/common/gsl.h"
 
 namespace onnxruntime {
 namespace contrib {
@@ -24,7 +24,7 @@ class CropBase {
                              "Attribute border needs to be specified with four border elements, got ", border_.size());
     }
 
-    const auto dims = X->Shape().GetDims();
+    const auto& dims = X->Shape().GetDims();
 
     if (dims.size() != 4) {
       return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,
@@ -48,13 +48,10 @@ class CropBase {
       return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Input's width (", W, ") needs to be greater than or equal to the leftBorder (", leftBorder, ") + rightBorder (", rightBorder, ")");
     }
 
-    int64_t bottomLimit = H - bottomBorder;
-    int64_t rightLimit = W - rightBorder;
-
     // scale = (height, width)
     if (!scale_.empty()) {
-      bottomLimit = topBorder + scale_[0];
-      rightLimit = leftBorder + scale_[1];
+      int64_t bottomLimit = topBorder + scale_[0];
+      int64_t rightLimit = leftBorder + scale_[1];
 
       if (H < bottomLimit) {
         return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,
@@ -83,7 +80,7 @@ class Crop final : public CropBase, public OpKernel {
     const Tensor* X = context->Input<Tensor>(0);
     ORT_RETURN_IF_ERROR(ValidateInput(X));
 
-    const auto dims = X->Shape().GetDims();
+    const auto& dims = X->Shape().GetDims();
     const int64_t N = dims[0];
     const int64_t C = dims[1];
     const int64_t H = dims[2];
@@ -105,8 +102,8 @@ class Crop final : public CropBase, public OpKernel {
     }
 
     Tensor* Y = context->Output(0, TensorShape({N, C, bottomLimit - topBorder, rightLimit - leftBorder}));
-    const T* Xdata = X->template Data<T>();
-    T* Ydata = Y->template MutableData<T>();
+    const T* Xdata = X->Data<T>();
+    T* Ydata = Y->MutableData<T>();
 
     int64_t dest_idx = 0;
     int64_t HW = H * W;
@@ -133,4 +130,4 @@ class Crop final : public CropBase, public OpKernel {
 };
 
 }  // namespace contrib
-}  //namespace onnxruntime
+}  // namespace onnxruntime

@@ -3,14 +3,16 @@
 
 #pragma once
 
-#include "core/common/common.h"
 #include "core/platform/ort_mutex.h"
-#include "core/framework/op_kernel.h"
+#include "core/providers/cuda/cuda_kernel.h"
 #include "core/providers/cuda/cudnn_common.h"
 #include "core/providers/cpu/nn/conv_attributes.h"
 #include <list>
 
 namespace onnxruntime {
+
+using ConvPadVector = ConvAttributes::ConvPadVector;
+
 namespace cuda {
 
 class CudnnConvolutionDescriptor final {
@@ -19,9 +21,10 @@ class CudnnConvolutionDescriptor final {
   ~CudnnConvolutionDescriptor();
 
   Status Set(size_t rank,
-             const std::vector<int64_t>& pads,
-             const std::vector<int64_t>& strides,
-             const std::vector<int64_t>& dilations,
+             const gsl::span<const int64_t>& pads,
+             const gsl::span<const int64_t>& strides,
+             const gsl::span<const int64_t>& dilations,
+             int groups,
              cudnnConvolutionMode_t mode,
              cudnnDataType_t data_type);
 
@@ -37,6 +40,15 @@ struct vector_hash {
     std::size_t seed = values.size();
     for (auto& val : values)
       seed ^= std::hash<T>()(val) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+    return seed;
+  }
+};
+
+struct tensor_shape_vector_hash {
+  std::size_t operator()(const TensorShapeVector& values) const {
+    std::size_t seed = values.size();
+    for (auto& val : values)
+      seed ^= std::hash<int64_t>()(val) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
     return seed;
   }
 };
@@ -88,7 +100,7 @@ class lru_unordered_map {
     lru_list_.clear();
   }
 
-private:
+ private:
   using list_type = std::list<Key, ListAllocator>;
   using iterator_type = typename list_type::iterator;
   struct value_type {
@@ -112,54 +124,93 @@ constexpr size_t MAX_CACHED_ALGO_PERF_RESULTS = 10000;
 template <typename AlgoPerfType>
 struct CudnnConvState {
   // if x/w dims changed, update algo and cudnnTensors
-  std::vector<int64_t> last_x_dims;
-  std::vector<int64_t> last_w_dims;
+  TensorShape last_x_dims;
+  TensorShape last_w_dims;
 
   // these would be recomputed if x/w dims change
-  std::vector<int64_t> y_dims;
+  TensorShape y_dims;
+  TensorShapeVector y_dims_with_adjusted_pads;
   size_t workspace_bytes;
   decltype(AlgoPerfType().algo) algo;
   CudnnTensor x_tensor;
-  CudnnFilterDescriptor filter_desc;
+  const void* x_data = nullptr;
+  size_t element_size = 0;
+  CudnnFilterDescriptor w_desc;
+  const void* w_data = nullptr;
   CudnnTensor b_tensor;
+  const void* b_data = nullptr;
+  void* b_zero = nullptr;
   CudnnTensor y_tensor;
+  Tensor* Y = nullptr;
+  void* y_data = nullptr;
+  CudnnTensor z_tensor;
+  const void* z_data = nullptr;
   CudnnConvolutionDescriptor conv_desc;
 
   struct PerfResultParams {
-    decltype(AlgoPerfType().algo)     algo;
-    decltype(AlgoPerfType().memory)   memory;
+    decltype(AlgoPerfType().algo) algo;
+    decltype(AlgoPerfType().memory) memory;
     decltype(AlgoPerfType().mathType) mathType;
   };
 
-  lru_unordered_map<std::vector<int64_t>, PerfResultParams, vector_hash<int64_t>> cached_benchmark_results { MAX_CACHED_ALGO_PERF_RESULTS };
+  lru_unordered_map<TensorShapeVector, PerfResultParams, tensor_shape_vector_hash> cached_benchmark_results{MAX_CACHED_ALGO_PERF_RESULTS};
+
+  // Some properties needed to support asymmetric padded Conv nodes
+  bool post_slicing_required;
+  TensorShapeVector slice_starts;
+  TensorShapeVector slice_ends;
+  TensorShapeVector slice_axes;
 
   // note that conv objects are shared between execution frames, and a lock is needed to avoid multi-thread racing
   OrtMutex mutex;
+  IAllocatorUniquePtr<void> memory_for_cudnn_conv_results;
+
+  ~CudnnConvState() {
+    if (b_zero) {
+      CUDA_CALL_THROW(cudaFree(b_zero));
+      b_zero = nullptr;
+    }
+  }
 };
 
 enum : size_t {
   AlgoSearchWorkspaceSize = 32 * 1024 * 1024,
 };
 
-template <typename T>
+// ONNX Conv operator uses NCHW format for input, weights and output.
+// NhwcConv contrib ops uses NHWC format: last dimension of input, weights and output are channels.
+template <typename T, bool NHWC>
 class Conv : public CudaKernel {
  public:
+  using CudaT = typename ToCudaType<T>::MappedType;
+
   Conv(const OpKernelInfo& info) : CudaKernel(info), conv_attrs_(info) {
     auto pads_size = conv_attrs_.pads.size();
     ORT_ENFORCE(pads_size % 2 == 0);
-    auto rank = pads_size / 2;
-    for (size_t i = 0; i < rank; i++) {
-      ORT_ENFORCE(conv_attrs_.pads[i] == conv_attrs_.pads[i + rank], "cudnn only supports symmetric padding");
-    }
   }
 
   Status ComputeInternal(OpKernelContext* context) const override;
 
- private:
-  ConvAttributes conv_attrs_;
+ protected:
+  inline IAllocatorUniquePtr<void> GetWorkSpace(onnxruntime::Stream* stream) const {
+    return GetScratchBuffer<void>(s_.workspace_bytes, stream);
+  }
 
+  Status UpdateState(OpKernelContext* context, bool bias_expected = false) const;
+  ConvAttributes conv_attrs_;
   mutable CudnnConvState<cudnnConvolutionFwdAlgoPerf_t> s_;
+  constexpr static auto kDefaultConvAlgo = CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM;
+  static const cudnnConvolutionFwdAlgo_t kAllAlgos[];
 };
 
+Status SliceOutUnwantedOutputSection(cudaStream_t stream,
+                                     const void* input_data,
+                                     gsl::span<const int64_t> input_dims,
+                                     void* output_data,
+                                     const gsl::span<const int64_t>& output_dims,
+                                     const gsl::span<const int64_t>& starts,
+                                     const gsl::span<const int64_t>& ends,
+                                     const gsl::span<const int64_t>& axes,
+                                     size_t element_size);
 }  // namespace cuda
 }  // namespace onnxruntime

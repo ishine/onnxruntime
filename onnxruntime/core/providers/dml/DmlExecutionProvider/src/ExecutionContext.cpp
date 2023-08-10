@@ -15,7 +15,7 @@ namespace Dml
         : m_queue(std::make_shared<CommandQueue>(queue))
         , m_dmlRecorder(d3d12Device, dmlDevice, m_queue)
     {
-        THROW_IF_FAILED(dmlDevice->GetParentDevice(IID_PPV_ARGS(m_d3dDevice.GetAddressOf())));        
+        ORT_THROW_IF_FAILED(dmlDevice->GetParentDevice(IID_GRAPHICS_PPV_ARGS(m_d3dDevice.GetAddressOf())));        
     }
 
     void ExecutionContext::SetAllocator(std::weak_ptr<BucketizedBufferAllocator> allocator)
@@ -125,19 +125,15 @@ namespace Dml
         m_dmlRecorder.ResourceBarrier(barriers);
     }
 
-    void ExecutionContext::GetCommandListForRecording(ID3D12GraphicsCommandList** commandList)
+    void ExecutionContext::GetCommandListForRecordingAndInvalidateState(ID3D12GraphicsCommandList** commandList)
     {
         assert(!m_closed);
         SetCommandRecorder(&m_dmlRecorder);
-        m_dmlRecorder.GetCommandList().CopyTo(commandList);
-    }
 
-    void ExecutionContext::Wait(ID3D12Fence* fence, uint64_t value)
-    {
-        assert(!m_closed);
-        Flush();
-        m_queue->Wait(fence, value);
-        ReleaseCompletedReferences();
+        // Ensure the descriptor heap is reset to D3D as something external may change it before recording
+        m_dmlRecorder.InvalidateDescriptorHeap();
+
+        m_dmlRecorder.GetCommandList().CopyTo(commandList);
     }
 
     void ExecutionContext::SetCommandRecorder(ICommandRecorder* newRecorder)
@@ -162,7 +158,7 @@ namespace Dml
     {
         assert(!m_closed);
 
-        if (!m_currentRecorder)
+        if (!m_currentRecorder || !m_currentRecorder->HasUnsubmittedWork())
         {
             // Nothing to flush
             return;
@@ -171,8 +167,11 @@ namespace Dml
         m_currentRecorder->CloseAndExecute();
         ReleaseCompletedReferences();
 
-        // Just submitted our command list, so we have neither DML or D3D12 work recorded on any of our command lists.
+        // Pre-emptively set the DML command recorder.  It's the only command recorder right now,
+        // and doing this here causes work and allocations resetting the command list to occur at
+        // a point where it's going to be parallelized with GPU work.
         m_currentRecorder = nullptr;
+        SetCommandRecorder(&m_dmlRecorder);
     }
     
     void ExecutionContext::QueueReference(IUnknown* object) 
@@ -183,7 +182,7 @@ namespace Dml
         bool waitForUnsubmittedWork = (m_currentRecorder != nullptr);
         m_queue->QueueReference(object, waitForUnsubmittedWork);
     }
-    
+
     void ExecutionContext::Close()
     {
         assert(!m_closed);
@@ -203,7 +202,7 @@ namespace Dml
 
         // If something has been recorded into a command list but not submitted yet, it means that the *next* fence
         // value is the one to signal completion.
-        const bool unflushedWorkExists = (m_currentRecorder != nullptr);
+        const bool unflushedWorkExists = (m_currentRecorder != nullptr) && m_currentRecorder->HasUnsubmittedWork();
         if (unflushedWorkExists)
         {
             ++event.fenceValue;

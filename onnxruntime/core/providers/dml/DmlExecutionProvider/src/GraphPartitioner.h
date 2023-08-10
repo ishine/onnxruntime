@@ -43,30 +43,10 @@ namespace Dml
     std::vector<std::unique_ptr<GraphPartition>>
     BuildPartitions(
         const onnxruntime::GraphViewer& graph,
-        const winrt::Windows::AI::MachineLearning::implementation::InternalRegistrationInfoMap& internalRegInfoMap,
-        const std::vector<const onnxruntime::KernelRegistry*>& registries,
+        const Windows::AI::MachineLearning::Adapter::InternalRegistrationInfoMap& internalRegInfoMap,
+        const onnxruntime::IExecutionProvider::IKernelLookup& kernel_lookup,
         uint32_t supportedDeviceDataTypeMask, // Each bit corresponds to each DML_TENSOR_DATA_TYPE.
         std::unordered_map<const onnxruntime::Node*, GraphNodeProperties>& graphNodePropertyMap,
         std::unordered_set<std::string>& requiredInitializerMap,
-        std::function<void(const onnxruntime::Node&)> onNodeUnsupportedInGraph = nullptr);
-
-    std::vector<std::unique_ptr<onnxruntime::ComputeCapability>>
-    PartitionGraph(
-        const onnxruntime::GraphViewer& graph,
-        const winrt::Windows::AI::MachineLearning::implementation::InternalRegistrationInfoMap& internalRegInfoMap,
-        const std::vector<const onnxruntime::KernelRegistry*>& registries,
-        uint32_t supportedDeviceDataTypeMask, // Each bit corresponds to each DML_TENSOR_DATA_TYPE.
-        onnxruntime::KernelRegistry* registryForPartitionKernels,
-        const std::string& partitionKernelPrefix
-    );
-
-    bool IsNodeSupportedByDml(
-        const onnxruntime::Node& node,    
-        const onnxruntime::KernelRegistry& registry,
-        uint32_t supportedDeviceDataTypeMask, // Each bit corresponds to each DML_TENSOR_DATA_TYPE.
-        const winrt::Windows::AI::MachineLearning::implementation::InternalRegistrationInfoMap& internalRegInfoMap,
-        bool allow64BitInputThroughStrides,
-        _In_opt_ const std::unordered_map<std::string, GraphPartition*>* nodeNameToPartitionMap // Only used when allow64BitInputThroughStrides is true
-    );
-
+        gsl::span<const onnxruntime::NodeIndex> additionalSplittingNodes);
 } // namespace Dml

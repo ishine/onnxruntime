@@ -11,11 +11,15 @@
 #include "core/providers/cuda/cuda_common.h"
 #include "core/providers/cuda/shared_inc/cuda_call.h"
 
+#if CUDA_VERSION >= 11000
+#include <cuda_bf16.h>
+#endif
+
 namespace onnxruntime {
 namespace cuda {
 
 // float16 arithmetic is supported after sm5.3 with intrinsics, and cuda does not provide fallback for lower versions
-#if __CUDA_ARCH__ < 530
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 530
 __device__ __forceinline__ half operator+(const half& lh, const half& rh) { return half((float)lh + (float)rh); }
 __device__ __forceinline__ half operator-(const half& lh, const half& rh) { return half((float)lh - (float)rh); }
 __device__ __forceinline__ half operator*(const half& lh, const half& rh) { return half((float)lh * (float)rh); }
@@ -69,7 +73,112 @@ __device__ __forceinline__ bool operator>(const half& lh, const half& rh) { retu
 __device__ __forceinline__ bool operator<(const half& lh, const half& rh) { return (float)lh < (float)rh; }
 __device__ __forceinline__ bool operator>=(const half& lh, const half& rh) { return (float)lh >= (float)rh; }
 __device__ __forceinline__ bool operator<=(const half& lh, const half& rh) { return (float)lh <= (float)rh; }
+
+// support half2 arithmetic for cuda architecture < 5.3
+__device__ __forceinline__ half2 operator+(const half2& lh, const half2& rh) {
+  half2 r;
+  r.x = lh.x + rh.x;
+  r.y = lh.y + rh.y;
+  return r;
+}
+
+__device__ __forceinline__ half2 operator-(const half2& lh, const half2& rh) {
+  half2 r;
+  r.x = lh.x - rh.x;
+  r.y = lh.y - rh.y;
+  return r;
+}
+
+__device__ __forceinline__ half2 operator*(const half2& lh, const half2& rh) {
+  half2 r;
+  r.x = lh.x * rh.x;
+  r.y = lh.y * rh.y;
+  return r;
+}
+
+__device__ __forceinline__ half2 operator/(const half2& lh, const half2& rh) {
+  half2 r;
+  r.x = lh.x / rh.x;
+  r.y = lh.y / rh.y;
+  return r;
+}
 #endif
+
+/// Arithmetic for BFloat16
+
+__device__ __forceinline__ BFloat16 operator+(const BFloat16& a, const BFloat16& b) {
+  return static_cast<float>(a) + static_cast<float>(b);
+}
+
+__device__ __forceinline__ BFloat16 operator-(const BFloat16& a, const BFloat16& b) {
+  return static_cast<float>(a) - static_cast<float>(b);
+}
+
+__device__ __forceinline__ BFloat16 operator*(const BFloat16& a, const BFloat16& b) {
+  return static_cast<float>(a) * static_cast<float>(b);
+}
+
+__device__ __forceinline__ BFloat16 operator/(const BFloat16& a, const BFloat16& b) {
+  return static_cast<float>(a) / static_cast<float>(b);
+}
+
+__device__ __forceinline__ BFloat16 operator-(const BFloat16& a) { return -static_cast<float>(a); }
+
+__device__ __forceinline__ BFloat16& operator+=(BFloat16& a, const BFloat16& b) {
+  a = a + b;
+  return a;
+}
+
+__device__ __forceinline__ BFloat16& operator-=(BFloat16& a, const BFloat16& b) {
+  a = a - b;
+  return a;
+}
+
+__device__ __forceinline__ BFloat16& operator*=(BFloat16& a, const BFloat16& b) {
+  a = a * b;
+  return a;
+}
+
+__device__ __forceinline__ BFloat16& operator/=(BFloat16& a, const BFloat16& b) {
+  a = a / b;
+  return a;
+}
+
+/// Arithmetic with floats
+
+__device__ __forceinline__ float operator+(BFloat16 a, float b) { return a + b; }
+__device__ __forceinline__ float operator-(BFloat16 a, float b) { return a - b; }
+__device__ __forceinline__ float operator*(BFloat16 a, float b) { return a * b; }
+__device__ __forceinline__ float operator/(BFloat16 a, float b) { return a / b; }
+
+__device__ __forceinline__ float operator+(float a, BFloat16 b) { return a + b; }
+__device__ __forceinline__ float operator-(float a, BFloat16 b) { return a - b; }
+__device__ __forceinline__ float operator*(float a, BFloat16 b) { return a * b; }
+__device__ __forceinline__ float operator/(float a, BFloat16 b) { return a / b; }
+
+__device__ __forceinline__ float& operator+=(float& a, const BFloat16& b) { return a += b; }
+__device__ __forceinline__ float& operator-=(float& a, const BFloat16& b) { return a -= b; }
+__device__ __forceinline__ float& operator*=(float& a, const BFloat16& b) { return a *= b; }
+__device__ __forceinline__ float& operator/=(float& a, const BFloat16& b) { return a /= b; }
+
+/// Arithmetic with doubles
+
+__device__ __forceinline__ double operator+(BFloat16 a, double b) { return static_cast<double>(a) + b; }
+__device__ __forceinline__ double operator-(BFloat16 a, double b) { return static_cast<double>(a) - b; }
+__device__ __forceinline__ double operator*(BFloat16 a, double b) { return static_cast<double>(a) * b; }
+__device__ __forceinline__ double operator/(BFloat16 a, double b) { return static_cast<double>(a) / b; }
+
+__device__ __forceinline__ double operator+(double a, BFloat16 b) { return a + static_cast<double>(b); }
+__device__ __forceinline__ double operator-(double a, BFloat16 b) { return a - static_cast<double>(b); }
+__device__ __forceinline__ double operator*(double a, BFloat16 b) { return a * static_cast<double>(b); }
+__device__ __forceinline__ double operator/(double a, BFloat16 b) { return a / static_cast<double>(b); }
+
+// Overloading < and > operators
+
+__device__ __forceinline__ bool operator==(BFloat16& lhs, BFloat16& rhs) { return float(lhs) == float(rhs); }
+__device__ __forceinline__ bool operator!=(BFloat16& lhs, BFloat16& rhs) { return float(lhs) != float(rhs); }
+__device__ __forceinline__ bool operator>(BFloat16& lhs, BFloat16& rhs) { return float(lhs) > float(rhs); }
+__device__ __forceinline__ bool operator<(BFloat16& lhs, BFloat16& rhs) { return float(lhs) < float(rhs); }
 
 template <typename T>
 __device__ __inline__ T _Ceil(T a);
@@ -129,11 +238,47 @@ template <>
 __device__ __inline__ double _Round(double a) { return rint(a); }
 
 template <>
-__device__ __inline__ half _Round(half a) { 
+__device__ __inline__ half _Round(half a) {
 #if __CUDA_ARCH__ < 530
   return half(rintf((float)a));
 #else
   return hrint(a);
+#endif
+}
+
+template <typename T>
+__device__ __inline__ T _Cos(T a);
+
+template <>
+__device__ __inline__ float _Cos(float a) { return cosf(a); }
+
+template <>
+__device__ __inline__ double _Cos(double a) { return cos(a); }
+
+template <>
+__device__ __inline__ half _Cos(half a) {
+#if __CUDA_ARCH__ < 530
+  return half(cosf((float)a));
+#else
+  return hcos(a);
+#endif
+}
+
+template <typename T>
+__device__ __inline__ T _Sin(T a);
+
+template <>
+__device__ __inline__ float _Sin(float a) { return sinf(a); }
+
+template <>
+__device__ __inline__ double _Sin(double a) { return sin(a); }
+
+template <>
+__device__ __inline__ half _Sin(half a) {
+#if __CUDA_ARCH__ < 530
+  return half(sinf((float)a));
+#else
+  return hsin(a);
 #endif
 }
 
@@ -181,8 +326,11 @@ __device__ __inline__ half2 _Tanh(half2 a) {
   return __float22half2_rn(tmp);
 }
 
-template <typename T>
-__device__ __inline__ T _Pow(T a, T b);
+// Capture permutations of int32/64/float/double
+template <typename T, typename T1>
+__device__ __inline__ T _Pow(T a, T1 b) {
+  return static_cast<T>(pow(static_cast<double>(a), static_cast<double>(b)));
+}
 
 template <>
 __device__ __inline__ float _Pow(float a, float b) { return powf(a, b); }
@@ -214,26 +362,77 @@ __device__ __inline__ double _Normcdf(double a) { return normcdf(a); }
 template <>
 __device__ __inline__ half _Normcdf(half a) { return half(normcdff((float)a)); }
 
+template <>
+__device__ __inline__ BFloat16 _Sqrt(BFloat16 a) { return sqrtf(static_cast<float>(a)); }
+
+template <>
+__device__ __inline__ BFloat16 _Exp(BFloat16 a) { return expf(static_cast<float>(a)); }
+
+template <>
+__device__ __inline__ BFloat16 _Log(BFloat16 a) { return logf(static_cast<float>(a)); }
+
+template <>
+__device__ __inline__ BFloat16 _Tanh(BFloat16 a) { return tanhf(static_cast<float>(a)); }
+
+template <>
+__device__ __inline__ BFloat16 _Normcdf(BFloat16 a) { return normcdff(static_cast<float>(a)); }
+
 template <typename T>
 __device__ __inline__ T _Gelu(T a) {
   return a * _Normcdf(a);
 }
 
+template <>
+__device__ __inline__ half _Gelu(half a) {
+  const half kHalf = half(0.5);
+  const half kOne = half(1.0);
+  const half kAlpha = half(M_SQRT1_2);
+  return a * kHalf * (kOne + _Erf(kAlpha * a));
+}
+
+template <typename T>
+__device__ __inline__ T _Mod(T a, T b) {
+  T r = a % b;
+  T zero = T(0);
+  if ((r > zero && b < zero) || (r < zero && b > zero)) {
+    r += b;
+  }
+  return r;
+}
+
+template <typename T>
+__device__ __inline__ T _Fmod(T a, T b) {
+  return a % b;
+}
+
+template <>
+__device__ __inline__ float _Fmod(float a, float b) {
+  return fmodf(a, b);
+}
+
+template <>
+__device__ __inline__ double _Fmod(double a, double b) {
+  return fmod(a, b);
+}
+
+template <>
+__device__ __inline__ half _Fmod(half a, half b) {
+  return fmodf((float)a, (float)b);
+}
+
+template <>
+__device__ __inline__ BFloat16 _Fmod(BFloat16 a, BFloat16 b) {
+  return fmodf((float)a, (float)b);
+}
+
 // We would like to use 64-bit integer to support large matrices. However, CUDA seems to support only 32-bit integer
 // For now, use int32_t to ensure that both Linux and Windows see this as 32 bit integer type.
-
 #ifndef CUDA_LONG
 #define CUDA_LONG int32_t
 #endif
 
-#define IDX2C(i, j, ld) (((j) * (ld)) + (i))  // 0 based indexing
-
-// ---------------------------------------------------------------------------
-// GridDim -- helper to choose the CUDA grid dimensions
-// ---------------------------------------------------------------------------
-
 template <class INT, class INT2>
-static INT CeilDiv(INT a, INT2 b)  // ceil(a/b)
+inline __host__ __device__ INT CeilDiv(INT a, INT2 b)  // ceil(a/b)
 {
   return (INT)(((size_t)a + (size_t)b - 1) / (size_t)b);  // these size_t casts are necessary since b may be INT_MAX (for maxGridSize[])
 }
@@ -241,55 +440,69 @@ static INT CeilDiv(INT a, INT2 b)  // ceil(a/b)
 struct GridDim {
   enum : CUDA_LONG {
     maxThreadsPerBlock = 256,  // max threads per block
-    maxWarpsPerBlock = 32,     // max warps per block
     maxElementsPerThread = 4,  // max element processed per thread
   };
-
-  // use these for launching
-  //   GridDim grid(NN);
-  //   kernel<<<grid.m_blocksPerGrid, grid.m_threadsPerBlock, ...>>>(...)
-  int blocks_per_grid_, threads_per_block_;  // (these may in the future be extended to multi-dimensional ones)
-  CUDA_LONG N_;
-
-  GridDim(CUDA_LONG N)  // linear grid
-  {
-    N_ = N;
-    if (N == 0)  // CUDA will fail to launch with 0 blocks
-      N = 1;
-
-    // get device information
-    const auto& props = DeviceProp::GetDeviceProps();
-    CUDA_LONG numProcs = props.multiProcessorCount;
-    CUDA_LONG warpSize = props.warpSize;
-
-    // distribute warps evenly over processors
-    CUDA_LONG warpsPerProc = CeilDiv(N, numProcs * warpSize);
-
-    // if too many warps per block then reduce #warps
-    // This limits the number of threads to 512.
-    if (warpsPerProc > maxWarpsPerBlock) {
-      CUDA_LONG overBy = CeilDiv(warpsPerProc, maxWarpsPerBlock);  // we are over by this factor
-      warpsPerProc = CeilDiv(warpsPerProc, overBy);
-    }
-
-    // put it back together
-    threads_per_block_ = warpsPerProc * warpSize;  // =a multiple of 32 that is as close to 1024 as makes sense given NN
-    blocks_per_grid_ = CeilDiv(N, threads_per_block_);
-    if (blocks_per_grid_ == 1)
-      threads_per_block_ = N;  // don't launch more than necessary
-    assert(blocks_per_grid_ * threads_per_block_ >= N);
-  }
-
-  // compute our location on the grid
-  static __device__ CUDA_LONG GetLinearThreadId() {
-    return blockDim.x * blockIdx.x + threadIdx.x;
-  }
 };
 
-#define CALCULATE_ELEMENTWISE_INDEX_OR_EXIT(id, N) \
-  CUDA_LONG id = GridDim::GetLinearThreadId();     \
-  if (id >= N)                                     \
+// aligned vector generates vectorized load/store on CUDA
+template <typename T, int vec_size>
+struct alignas(sizeof(T) * vec_size) aligned_vector {
+  T val[vec_size];
+};
+
+#define CALCULATE_ELEMENTWISE_INDEX_OR_EXIT(id, N)      \
+  CUDA_LONG id = blockDim.x * blockIdx.x + threadIdx.x; \
+  if (id >= N)                                          \
     return;
+
+// CUDA_KERNEL_ASSERT is a macro that wraps an assert() call inside cuda kernels.
+// This is not supported by Apple platforms so we special case it.
+// See http://docs.nvidia.com/cuda/cuda-c-programming-guide/#assertion
+#if defined(__APPLE__) || defined(__HIP_PLATFORM_HCC__)
+#define CUDA_KERNEL_ASSERT(...)
+#else  // __APPLE__
+#define CUDA_KERNEL_ASSERT(...) assert(__VA_ARGS__)
+#endif  // __APPLE__
+
+// WARP related definitions and functions
+constexpr int GPU_WARP_SIZE = 32;
+constexpr int GPU_WARP_SIZE_HOST = GPU_WARP_SIZE;
+
+template <typename T>
+__device__ __forceinline__ T WARP_SHFL(T value, int srcLane, int width = GPU_WARP_SIZE, unsigned int mask = 0xffffffff) {
+#if CUDA_VERSION >= 9000
+  return __shfl_sync(mask, value, srcLane, width);
+#else
+  return __shfl(value, srcLane, width);
+#endif
+}
+
+template <typename T>
+__device__ __forceinline__ T WARP_SHFL_XOR(T value, int laneMask, int width = GPU_WARP_SIZE, unsigned int mask = 0xffffffff) {
+#if CUDA_VERSION >= 9000
+  return __shfl_xor_sync(mask, value, laneMask, width);
+#else
+  return __shfl_xor(value, laneMask, width);
+#endif
+}
+
+template <typename T>
+__device__ __forceinline__ T WARP_SHFL_UP(T value, unsigned int delta, int width = GPU_WARP_SIZE, unsigned int mask = 0xffffffff) {
+#if CUDA_VERSION >= 9000
+  return __shfl_up_sync(mask, value, delta, width);
+#else
+  return __shfl_up(value, delta, width);
+#endif
+}
+
+template <typename T>
+__device__ __forceinline__ T WARP_SHFL_DOWN(T value, unsigned int delta, int width = GPU_WARP_SIZE, unsigned int mask = 0xffffffff) {
+#if CUDA_VERSION >= 9000
+  return __shfl_down_sync(mask, value, delta, width);
+#else
+  return __shfl_down(value, delta, width);
+#endif
+}
 
 }  // namespace cuda
 }  // namespace onnxruntime

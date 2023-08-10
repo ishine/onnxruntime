@@ -1,37 +1,39 @@
 /**
-* Copyright (c) 2016-present, Facebook, Inc.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*/
+ * Copyright (c) 2016-present, Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 // Modifications Copyright (c) Microsoft.
 
 #include "core/util/math.h"
 #include <gtest/gtest.h>
 #include "core/platform/threadpool.h"
 #include "core/util/math_cpuonly.h"
+#include "core/util/thread_utils.h"
+
 namespace onnxruntime {
 
 #define VECTOR_HEAD(x) x.size() > 0 ? &x[0] : NULL
 
-//parameter is thread pool size
+// parameter is thread pool size
 class MathGemmTest : public testing::TestWithParam<int> {
  protected:
-  static concurrency::ThreadPool* CreateThreadPool(int size) {
-    if (size == 1)
-      return nullptr;
-    return new concurrency::ThreadPool("test", size);
+  static OrtThreadPoolParams CreateThreadPoolOptions(int size) {
+    OrtThreadPoolParams option;
+    option.thread_pool_size = size;
+    return option;
   }
-  std::unique_ptr<concurrency::ThreadPool> tp{CreateThreadPool(GetParam())};
+  std::unique_ptr<concurrency::ThreadPool> tp{concurrency::CreateThreadPool(&Env::Default(), CreateThreadPoolOptions(GetParam()), concurrency::ThreadPoolType::INTRA_OP)};
 };
 
 TEST_P(MathGemmTest, GemmNoTransNoTrans) {
@@ -49,9 +51,9 @@ TEST_P(MathGemmTest, GemmNoTransNoTrans) {
     EXPECT_EQ(W[i], 1);
   }
 
-  const float kOne = 1.0;
-  const float kPointFive = 0.5;
-  const float kZero = 0.0;
+  constexpr float kOne = 1.0;
+  constexpr float kPointFive = 0.5;
+  constexpr float kZero = 0.0;
   math::Gemm<float>(CblasNoTrans, CblasNoTrans, 5, 6, 10, kOne,
                     VECTOR_HEAD(X), VECTOR_HEAD(W), kZero, VECTOR_HEAD(Y),
                     tp.get());
@@ -94,9 +96,9 @@ TEST_P(MathGemmTest, GemmNoTransTrans) {
     EXPECT_EQ(W[i], 1);
   }
 
-  const float kOne = 1.0;
-  const float kPointFive = 0.5;
-  const float kZero = 0.0;
+  constexpr float kOne = 1.0;
+  constexpr float kPointFive = 0.5;
+  constexpr float kZero = 0.0;
   math::Gemm<float>(CblasNoTrans, CblasTrans, 5, 6, 10, kOne,
                     VECTOR_HEAD(X), VECTOR_HEAD(W), kZero, VECTOR_HEAD(Y),
                     tp.get());
@@ -121,8 +123,8 @@ TEST_P(MathGemmTest, GemmNoTransTrans) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(MathGemmTests, MathGemmTest,
-                        testing::Values(1, 4));
+INSTANTIATE_TEST_SUITE_P(MathGemmTests, MathGemmTest,
+                         testing::Values(1, 0));
 
 TEST(MathTest, GemvNoTrans) {
   auto& provider = CPUMathUtil::Instance();
@@ -139,9 +141,9 @@ TEST(MathTest, GemvNoTrans) {
     EXPECT_EQ(X[i], 1);
   }
 
-  const float kOne = 1.0;
-  const float kPointFive = 0.5;
-  const float kZero = 0.0;
+  constexpr float kOne = 1.0;
+  constexpr float kPointFive = 0.5;
+  constexpr float kZero = 0.0;
   math::Gemv<float, CPUMathUtil>(CblasNoTrans, 5, 10, kOne, VECTOR_HEAD(A), VECTOR_HEAD(X),
                                  kZero, VECTOR_HEAD(Y), &provider);
   for (size_t i = 0; i < Y.size(); ++i) {
@@ -177,9 +179,9 @@ TEST(MathTest, GemvTrans) {
     EXPECT_EQ(X[i], 1);
   }
 
-  const float kOne = 1.0;
-  const float kPointFive = 0.5;
-  const float kZero = 0.0;
+  constexpr float kOne = 1.0;
+  constexpr float kPointFive = 0.5;
+  constexpr float kZero = 0.0;
   math::Gemv<float, CPUMathUtil>(CblasTrans, 6, 10, kOne, VECTOR_HEAD(A), VECTOR_HEAD(X),
                                  kZero, VECTOR_HEAD(Y), &provider);
   for (size_t i = 0; i < Y.size(); ++i) {
@@ -197,6 +199,24 @@ TEST(MathTest, GemvTrans) {
                                  &provider);
   for (size_t i = 0; i < Y.size(); ++i) {
     EXPECT_EQ(Y[i], 12) << i;
+  }
+}
+
+TEST(MathTest, HalfFloatConversion) {
+  constexpr float original_values[] = {-4.0f, -2.0f, -1.0f, -0.5f, 0.0f, 0.5f, 1.0f, 2.0f, 4.0f};
+  for (const auto original_value : original_values) {
+    const auto half_value = math::floatToHalf(original_value);
+    const auto round_trip_value = math::halfToFloat(half_value);
+    EXPECT_EQ(round_trip_value, original_value);
+  }
+}
+
+TEST(MathTest, HalfDoubleConversion) {
+  constexpr double original_values[] = {-4.0f, -2.0f, -1.0f, -0.5f, 0.0f, 0.5f, 1.0f, 2.0f, 4.0f};
+  for (const auto original_value : original_values) {
+    const auto half_value = math::doubleToHalf(original_value);
+    const auto round_trip_value = static_cast<double>(math::halfToFloat(half_value));
+    EXPECT_EQ(round_trip_value, original_value);
   }
 }
 

@@ -58,6 +58,25 @@ TEST(Unique, Flatten_Unsorted) {
                        inverse_indices_dims, inverse_indices, counts_dims, counts);
 }
 
+TEST(Unique, Flatten_Unsorted_Double) {
+  const std::vector<int64_t> X_dims{2, 2};
+  const std::vector<double> X{3.14, -1.3, 3.14, -1.3};
+  const int64_t* axis = nullptr;
+  bool sorted = false;
+  const std::vector<int64_t> Y_dims{2};
+  const std::vector<double> Y{3.14, -1.3};
+
+  const std::vector<int64_t> indices_dims{2};
+  const std::vector<int64_t> indices{0, 1};
+  const std::vector<int64_t> inverse_indices_dims{4};
+  const std::vector<int64_t> inverse_indices{0, 1, 0, 1};
+  const std::vector<int64_t> counts_dims{2};
+  const std::vector<int64_t> counts{2, 2};
+
+  RunUniqueTest<double>(X_dims, X, axis, sorted, Y_dims, Y, indices_dims, indices,
+                        inverse_indices_dims, inverse_indices, counts_dims, counts);
+}
+
 // TEMPORARY. The ONNX test expected data for Y for unique_not_sorted_without_axis doesn't match the comments in that
 // test and is in sorted order. This unit test validates we have the correct behavior, pending fixing the onnx test
 // data.
@@ -142,7 +161,7 @@ TEST(Unique, Axis0_Unsorted) {
                              0.f, 1.f,
                              1.f, 0.f};
 
-  const int64_t axis = 0;
+  constexpr int64_t axis = 0;
   bool sorted = false;
   const std::vector<int64_t> Y_dims{3, 2};
   const std::vector<float> Y{0.f, 1.f,
@@ -167,7 +186,7 @@ TEST(Unique, Axis0_Sorted) {
                              0.f, 1.f,
                              1.f, 0.f};
 
-  const int64_t axis = 0;
+  constexpr int64_t axis = 0;
   bool sorted = true;
   const std::vector<int64_t> Y_dims{3, 2};
   const std::vector<float> Y{0.f, 1.f,
@@ -192,7 +211,7 @@ TEST(Unique, Axis0_Unsorted_String) {
                                    "0.f", "1.f",
                                    "1.f", "0.f"};
 
-  const int64_t axis = 0;
+  constexpr int64_t axis = 0;
   bool sorted = false;
   const std::vector<int64_t> Y_dims{3, 2};
   const std::vector<std::string> Y{"0.f", "1.f",
@@ -222,7 +241,7 @@ TEST(Unique, Axis1_Unsorted) {
                               2, 1,
                               0, 1};
 
-  const int64_t axis = 1;
+  constexpr int64_t axis = 1;
   bool sorted = false;
   const std::vector<int64_t> Y_dims{2, 3, 2};
   const std::vector<int8_t> Y{1, 1,
@@ -256,7 +275,7 @@ TEST(Unique, Axis1_Sorted) {
                                2, 1,
                                0, 1};
 
-  const int64_t axis = 1;
+  constexpr int64_t axis = 1;
   bool sorted = true;
   const std::vector<int64_t> Y_dims{2, 3, 2};
   const std::vector<int64_t> Y{0, 1,
@@ -286,7 +305,7 @@ TEST(Unique, Axis2_Unsorted) {
                                1, 1, 0, 1,
                                2, 1, 0, 1};
 
-  const int64_t axis = 2;
+  constexpr int64_t axis = 2;
   bool sorted = false;
   const std::vector<int64_t> Y_dims{2, 2, 3};
   const std::vector<int64_t> Y{1, 1, 0,
@@ -314,7 +333,7 @@ TEST(Unique, Axis2_Sorted) {
                                1, 1, 0, 1,
                                2, 1, 0, 1};
 
-  const int64_t axis = 2;
+  constexpr int64_t axis = 2;
   bool sorted = true;
   const std::vector<int64_t> Y_dims{2, 2, 3};
   const std::vector<int64_t> Y{0, 1, 1,
@@ -335,7 +354,7 @@ TEST(Unique, Axis2_Sorted) {
 }
 
 TEST(Unique, InvalidAxis) {
-  const int64_t axis = 12;
+  constexpr int64_t axis = 12;
   const std::vector<int64_t> X_dims{2, 3};
   const std::vector<float> X{1.f, 4.f, 1.f, 2.f, 2.f, 0.f};
   const std::vector<int64_t> Y_dims{};

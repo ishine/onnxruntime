@@ -2,12 +2,14 @@
 // Licensed under the MIT License.
 
 #pragma once
-#include <vector>
-#include <memory>
 
+#include <memory>
+#include <vector>
+#include <stdlib.h>
+#include <stdint.h>
+#include "callback.h"
 namespace onnxruntime {
 namespace test {
-struct OrtCallback;
 /**
  * A holder for delay freed buffers
  */
@@ -19,15 +21,20 @@ class HeapBuffer {
    */
   ~HeapBuffer();
   void* AllocMemory(size_t size) {
-    void* p = malloc(size);
-    buffers_.push_back(p);
-    return p;
+    auto p = std::make_unique<uint8_t[]>(size);
+    void* ret = p.get();
+    buffers_.emplace_back(std::move(p));
+    return ret;
   }
-  void AddDeleter(OrtCallback* d);
+  void AddDeleter(const OrtCallback& d);
+
+  HeapBuffer(const HeapBuffer&) = delete;
+  HeapBuffer& operator=(const HeapBuffer&) = delete;
 
  private:
-  std::vector<OrtCallback*> deleters_;
-  std::vector<void*> buffers_;
+  std::vector<OrtCallback> deleters_;
+  std::vector<std::unique_ptr<uint8_t[]> > buffers_;
 };
+
 }  // namespace test
 }  // namespace onnxruntime

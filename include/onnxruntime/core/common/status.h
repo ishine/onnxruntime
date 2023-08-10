@@ -16,7 +16,10 @@ limitations under the License.
 #include <memory>
 #include <ostream>
 #include <string>
-
+#ifdef _WIN32
+#include <winerror.h>
+#endif
+#include "core/common/gsl.h"
 namespace onnxruntime {
 namespace common {
 
@@ -44,7 +47,7 @@ enum StatusCode {
   EP_FAIL = 11
 };
 
-inline const char* StatusCodeToString(StatusCode status) noexcept {
+constexpr const char* StatusCodeToString(StatusCode status) noexcept {
   switch (status) {
     case StatusCode::OK:
       return "SUCCESS";
@@ -75,7 +78,40 @@ inline const char* StatusCodeToString(StatusCode status) noexcept {
   }
 }
 
-class Status {
+#ifdef _WIN32
+constexpr HRESULT StatusCodeToHRESULT(StatusCode status) noexcept {
+  switch (status) {
+    case StatusCode::OK:
+      return S_OK;
+    case StatusCode::FAIL:
+      return E_FAIL;
+    case StatusCode::INVALID_ARGUMENT:
+      return E_INVALIDARG;
+    case StatusCode::NO_SUCHFILE:
+      return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    case StatusCode::NO_MODEL:
+      return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    case StatusCode::ENGINE_ERROR:
+      return E_FAIL;
+    case StatusCode::RUNTIME_EXCEPTION:
+      return E_FAIL;
+    case StatusCode::INVALID_PROTOBUF:
+      return HRESULT_FROM_WIN32(ERROR_FILE_CORRUPT);
+    case StatusCode::MODEL_LOADED:
+      return HRESULT_FROM_WIN32(ERROR_INTERNAL_ERROR);
+    case StatusCode::NOT_IMPLEMENTED:
+      return E_NOTIMPL;
+    case StatusCode::INVALID_GRAPH:
+      return HRESULT_FROM_WIN32(ERROR_FILE_CORRUPT);
+    case StatusCode::EP_FAIL:
+      return HRESULT_FROM_WIN32(ERROR_INTERNAL_ERROR);
+    default:
+      return E_FAIL;
+  }
+}
+#endif
+
+class [[nodiscard]] Status {
  public:
   Status() noexcept = default;
 
@@ -85,9 +121,10 @@ class Status {
 
   Status(StatusCategory category, int code);
 
+  GSL_SUPPRESS(r .11)
   Status(const Status& other)
       : state_((other.state_ == nullptr) ? nullptr : new State(*other.state_)) {}
-
+  GSL_SUPPRESS(r .11)
   Status& operator=(const Status& other) {
     if (state_ != other.state_) {
       if (other.state_ == nullptr) {
@@ -151,4 +188,8 @@ inline std::ostream& operator<<(std::ostream& out, const Status& status) {
 }
 
 }  // namespace common
+
+// make Status directly available in the onnxruntime namespace as it is widely used
+using common::Status;
+
 }  // namespace onnxruntime

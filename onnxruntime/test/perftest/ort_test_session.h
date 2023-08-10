@@ -12,9 +12,9 @@ namespace perftest {
 class OnnxRuntimeTestSession : public TestSession {
  public:
   OnnxRuntimeTestSession(Ort::Env& env, std::random_device& rd, const PerformanceTestConfig& performance_test_config,
-                         const TestModelInfo* m);
+                         const TestModelInfo& m);
 
-  void PreLoadTestData(size_t test_data_id, size_t input_id, OrtValue* value) override {
+  void PreLoadTestData(size_t test_data_id, size_t input_id, Ort::Value&& value) override {
     if (test_inputs_.size() < test_data_id + 1) {
       test_inputs_.resize(test_data_id + 1);
     }
@@ -22,14 +22,13 @@ class OnnxRuntimeTestSession : public TestSession {
       for (int i = 0; i < input_length_; i++)
         test_inputs_[test_data_id].emplace_back(nullptr);
     }
-    test_inputs_[test_data_id][input_id] = Ort::Value{value};
+    test_inputs_[test_data_id][input_id] = std::move(value);
   }
 
-  ~OnnxRuntimeTestSession() override {
-    for (char* p : input_names_) {
-      free(p);
-    }
-  }
+  bool PopulateGeneratedInputTestData(int32_t seed);
+
+  ~OnnxRuntimeTestSession() = default;
+
   std::chrono::duration<double> Run() override;
 
   ORT_DISALLOW_COPY_ASSIGNMENT_AND_MOVE(OnnxRuntimeTestSession);
@@ -43,7 +42,8 @@ class OnnxRuntimeTestSession : public TestSession {
   // The same size with output_names_.
   // TODO: implement a customized allocator, then we can remove output_names_ to simplify this code
   std::vector<const char*> output_names_raw_ptr;
-  std::vector<char*> input_names_;
+  std::vector<const char*> input_names_;
+  std::vector<std::string> input_names_str_;
   const int input_length_;
 };
 

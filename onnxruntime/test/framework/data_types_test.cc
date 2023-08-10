@@ -4,10 +4,15 @@
 #include <typeinfo>
 #include <cmath>
 
+#include "core/common/inlined_containers.h"
 #include "core/framework/data_types.h"
 #include "core/framework/data_types_internal.h"
+#include "core/framework/float16.h"
 #include "core/graph/onnx_protobuf.h"
 #include "gtest/gtest.h"
+
+#include "core/util/math.h"
+#include <ostream>
 
 #ifdef __GNUC__
 #pragma GCC diagnostic push
@@ -28,9 +33,11 @@ struct TestMap {
 };
 
 // Try recursive type registration and compatibility tests
-using TestMapToMapInt64ToFloat = TestMap<int64_t, MapInt64ToFloat>;
 using VectorInt64 = std::vector<int64_t>;
+#if !defined(DISABLE_ML_OPS)
+using TestMapToMapInt64ToFloat = TestMap<int64_t, MapInt64ToFloat>;
 using TestMapStringToVectorInt64 = TestMap<std::string, VectorInt64>;
+#endif
 
 // Trial to see if we resolve the setter properly
 // a map with a key that has not been registered in data_types.cc
@@ -66,19 +73,23 @@ struct TestOpaqueNoNames {};
 // use the same cpp runtime types but due to Opaque type domain, name
 // and optional parameters we produce separate MLDataTypes that are NOT
 // compatible with each other.
+#if !defined(DISABLE_ML_OPS)
 using MyOpaqueMapCpp_1 = std::map<int64_t, TestOpaqueType_1>;
 using MyOpaqueMapCpp_2 = std::map<int64_t, TestOpaqueType_2>;
+#endif
 
 // Register Sequence as containing an Opaque type
 using MyOpaqueSeqCpp_1 = std::vector<TestOpaqueType_1>;
 using MyOpaqueSeqCpp_2 = std::vector<TestOpaqueType_2>;
 
+#if !defined(DISABLE_ML_OPS)
 ORT_REGISTER_MAP(MyOpaqueMapCpp_1);
 ORT_REGISTER_MAP(MyOpaqueMapCpp_2);
 
 ORT_REGISTER_MAP(TestMapToMapInt64ToFloat);
 ORT_REGISTER_MAP(TestMapStringToVectorInt64);
 ORT_REGISTER_MAP(TestMapMLFloat16ToFloat);
+#endif
 
 ORT_REGISTER_SEQ(MyOpaqueSeqCpp_1);
 ORT_REGISTER_SEQ(MyOpaqueSeqCpp_2);
@@ -100,12 +111,14 @@ ORT_REGISTER_OPAQUE_TYPE(TestOpaqueNoNames, TestOpaqueEmpty, TestOpaqueEmpty);
   }
 
 void RegisterTestTypes() {
+#if !defined(DISABLE_ML_OPS)
   REGISTER_ONNX_PROTO(MyOpaqueMapCpp_1);
   REGISTER_ONNX_PROTO(MyOpaqueMapCpp_2);
 
   REGISTER_ONNX_PROTO(TestMapToMapInt64ToFloat);
   REGISTER_ONNX_PROTO(TestMapStringToVectorInt64);
   REGISTER_ONNX_PROTO(TestMapMLFloat16ToFloat);
+#endif
 
   REGISTER_ONNX_PROTO(MyOpaqueSeqCpp_1);
   REGISTER_ONNX_PROTO(MyOpaqueSeqCpp_2);
@@ -149,50 +162,61 @@ struct DimSetter<d, dims...> {
 };
 
 template <int... dims>
-struct TensorShapeTypeProto : public TensorShapeProto {
+struct TensorShapeTypeProto {
   TensorShapeTypeProto() {
-    DimSetter<dims...>::set(*this);
+    DimSetter<dims...>::set(proto);
   }
+  TensorShapeProto proto;
 };
 
 template <>
-struct TensorShapeTypeProto<> : public TensorShapeProto {};
-
-template <TensorProto_DataType T>
-struct TensorTypeProto : public TypeProto {
-  TensorTypeProto() {
-    mutable_tensor_type()->set_elem_type(T);
-  }
+struct TensorShapeTypeProto<> {
+  TensorShapeProto proto;
 };
 
 template <TensorProto_DataType T>
-struct SparseTensorTypeProto : public TypeProto {
+struct TensorTypeProto {
+  TensorTypeProto() {
+    proto.mutable_tensor_type()->set_elem_type(T);
+  }
+  TypeProto proto;
+};
+
+template <TensorProto_DataType T>
+struct SparseTensorTypeProto {
   SparseTensorTypeProto() {
-    mutable_sparse_tensor_type()->set_elem_type(T);
+    proto.mutable_sparse_tensor_type()->set_elem_type(T);
   }
   void SetShape(const TensorShapeProto& shape) {
-    mutable_sparse_tensor_type()->mutable_shape()->CopyFrom(shape);
+    proto.mutable_sparse_tensor_type()->mutable_shape()->CopyFrom(shape);
   }
   void SetShape(TensorShapeProto&& shape) {
-    *mutable_sparse_tensor_type()->mutable_shape() = std::move(shape);
+    *proto.mutable_sparse_tensor_type()->mutable_shape() = std::move(shape);
   }
   void ClearShape() {
-    mutable_sparse_tensor_type()->clear_shape();
+    proto.mutable_sparse_tensor_type()->clear_shape();
   }
+  TypeProto proto;
 };
 
 template <TensorProto_DataType key, TensorProto_DataType value>
-struct MapTypeProto : public TypeProto {
+struct MapTypeProto {
   MapTypeProto() {
-    mutable_map_type()->set_key_type(key);
-    mutable_map_type()->mutable_value_type()->mutable_tensor_type()->set_elem_type(value);
+    proto.mutable_map_type()->set_key_type(key);
+    proto.mutable_map_type()->mutable_value_type()->mutable_tensor_type()->set_elem_type(value);
   }
+  TypeProto proto;
 };
 
 class DataTypeTest : public testing::Test {
  public:
   static void SetUpTestCase() {
-    RegisterTestTypes();
+    // xcTest run test case by case, so the SetUp needs to be reentrant.
+    static std::atomic<bool> loaded(false);
+    if (!loaded.load()) {
+      loaded.store(true);
+      RegisterTestTypes();
+    }
   }
 };
 
@@ -232,42 +256,44 @@ TEST_F(DataTypeTest, OpaqueRegistrationTest) {
   EXPECT_FALSE(utils::IsOpaqueType(op_ml2, TestOpaqueDomain_1, TestOpaqueName_2));
   EXPECT_FALSE(utils::IsOpaqueType(DataTypeImpl::GetTensorType<float>(), TestOpaqueDomain_1, TestOpaqueName_1));
 
+#if !defined(DISABLE_ML_OPS)
   utils::ContainerChecker c_checker(DataTypeImpl::GetType<MyOpaqueMapCpp_1>());
   EXPECT_TRUE(c_checker.IsMap());
   bool result = c_checker.IsMapOf<int64_t, TestOpaqueType_1>();
   EXPECT_TRUE(result);
+#endif
 }
 
+#if !defined(DISABLE_ML_OPS)
 TEST_F(DataTypeTest, MapStringStringTest) {
   TensorTypeProto<TensorProto_DataType_FLOAT> tensor_type;
   auto ml_str_str = DataTypeImpl::GetType<MapStringToString>();
-  EXPECT_TRUE(DataTypeImpl::GetTensorType<float>()->IsCompatible(tensor_type));
-  EXPECT_FALSE(DataTypeImpl::GetTensorType<uint64_t>()->IsCompatible(tensor_type));
-  EXPECT_FALSE(ml_str_str->IsCompatible(tensor_type));
+  EXPECT_TRUE(DataTypeImpl::GetTensorType<float>()->IsCompatible(tensor_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetTensorType<uint64_t>()->IsCompatible(tensor_type.proto));
+  EXPECT_FALSE(ml_str_str->IsCompatible(tensor_type.proto));
   utils::ContainerChecker c_checker(ml_str_str);
   bool result = c_checker.IsMapOf<std::string, std::string>();
   EXPECT_TRUE(result);
-  result =  c_checker.IsMapOf<std::string, int64_t>();
+  result = c_checker.IsMapOf<std::string, int64_t>();
   EXPECT_FALSE(result);
 
   utils::ContainerChecker c_checker1(DataTypeImpl::GetTensorType<float>());
-  result =  c_checker1.IsMapOf<std::string, int64_t>();
+  result = c_checker1.IsMapOf<std::string, int64_t>();
   EXPECT_FALSE(result);
-
 
   MapTypeProto<TensorProto_DataType_STRING, TensorProto_DataType_STRING> maps2s_type;
   MapTypeProto<TensorProto_DataType_STRING, TensorProto_DataType_INT64> maps2i_type;
-  EXPECT_TRUE(ml_str_str->IsCompatible(maps2s_type));
-  EXPECT_FALSE(ml_str_str->IsCompatible(maps2i_type));
+  EXPECT_TRUE(ml_str_str->IsCompatible(maps2s_type.proto));
+  EXPECT_FALSE(ml_str_str->IsCompatible(maps2i_type.proto));
 }
 
 TEST_F(DataTypeTest, MapStringInt64Test) {
   MapTypeProto<TensorProto_DataType_STRING, TensorProto_DataType_STRING> maps2s_type;
   MapTypeProto<TensorProto_DataType_STRING, TensorProto_DataType_INT64> maps2i_type;
   TensorTypeProto<TensorProto_DataType_FLOAT> tensor_type;
-  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToInt64>()->IsCompatible(maps2s_type));
-  EXPECT_TRUE(DataTypeImpl::GetType<MapStringToInt64>()->IsCompatible(maps2i_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToInt64>()->IsCompatible(tensor_type));
+  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToInt64>()->IsCompatible(maps2s_type.proto));
+  EXPECT_TRUE(DataTypeImpl::GetType<MapStringToInt64>()->IsCompatible(maps2i_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToInt64>()->IsCompatible(tensor_type.proto));
 
   utils::ContainerChecker c_checker(DataTypeImpl::GetType<MapStringToInt64>());
   bool result = c_checker.IsMapOf<std::string, int64_t>();
@@ -278,36 +304,36 @@ TEST_F(DataTypeTest, MapStringFloatTest) {
   MapTypeProto<TensorProto_DataType_STRING, TensorProto_DataType_FLOAT> maps2f_type;
   MapTypeProto<TensorProto_DataType_STRING, TensorProto_DataType_INT64> maps2i_type;
   TensorTypeProto<TensorProto_DataType_FLOAT> tensor_type;
-  EXPECT_TRUE(DataTypeImpl::GetType<MapStringToFloat>()->IsCompatible(maps2f_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToFloat>()->IsCompatible(maps2i_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToFloat>()->IsCompatible(tensor_type));
+  EXPECT_TRUE(DataTypeImpl::GetType<MapStringToFloat>()->IsCompatible(maps2f_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToFloat>()->IsCompatible(maps2i_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToFloat>()->IsCompatible(tensor_type.proto));
 }
 
 TEST_F(DataTypeTest, MapStringDoubleTest) {
   MapTypeProto<TensorProto_DataType_STRING, TensorProto_DataType_DOUBLE> maps2d_type;
   MapTypeProto<TensorProto_DataType_STRING, TensorProto_DataType_INT64> maps2i_type;
   TensorTypeProto<TensorProto_DataType_FLOAT> tensor_type;
-  EXPECT_TRUE(DataTypeImpl::GetType<MapStringToDouble>()->IsCompatible(maps2d_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToDouble>()->IsCompatible(maps2i_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToDouble>()->IsCompatible(tensor_type));
+  EXPECT_TRUE(DataTypeImpl::GetType<MapStringToDouble>()->IsCompatible(maps2d_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToDouble>()->IsCompatible(maps2i_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<MapStringToDouble>()->IsCompatible(tensor_type.proto));
 }
 
 TEST_F(DataTypeTest, MapInt64StringTest) {
   MapTypeProto<TensorProto_DataType_INT64, TensorProto_DataType_STRING> mapi2s_type;
   MapTypeProto<TensorProto_DataType_INT64, TensorProto_DataType_INT64> mapi2i_type;
   TensorTypeProto<TensorProto_DataType_FLOAT> tensor_type;
-  EXPECT_TRUE(DataTypeImpl::GetType<MapInt64ToString>()->IsCompatible(mapi2s_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<MapInt64ToString>()->IsCompatible(mapi2i_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<MapInt64ToString>()->IsCompatible(tensor_type));
+  EXPECT_TRUE(DataTypeImpl::GetType<MapInt64ToString>()->IsCompatible(mapi2s_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<MapInt64ToString>()->IsCompatible(mapi2i_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<MapInt64ToString>()->IsCompatible(tensor_type.proto));
 }
 
 TEST_F(DataTypeTest, MapInt64DoubleTest) {
   MapTypeProto<TensorProto_DataType_INT64, TensorProto_DataType_DOUBLE> mapi2d_type;
   MapTypeProto<TensorProto_DataType_INT64, TensorProto_DataType_INT64> mapi2i_type;
   TensorTypeProto<TensorProto_DataType_FLOAT> tensor_type;
-  EXPECT_TRUE(DataTypeImpl::GetType<MapInt64ToDouble>()->IsCompatible(mapi2d_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<MapInt64ToString>()->IsCompatible(mapi2i_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<MapInt64ToString>()->IsCompatible(tensor_type));
+  EXPECT_TRUE(DataTypeImpl::GetType<MapInt64ToDouble>()->IsCompatible(mapi2d_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<MapInt64ToString>()->IsCompatible(mapi2i_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<MapInt64ToString>()->IsCompatible(tensor_type.proto));
 }
 
 TEST_F(DataTypeTest, RecursiveMapTest) {
@@ -345,6 +371,7 @@ TEST_F(DataTypeTest, RecursiveMapTest) {
   mut_map->mutable_value_type()->CopyFrom(*op2_proto->GetTypeProto());
   EXPECT_TRUE(DataTypeImpl::GetType<MyOpaqueMapCpp_2>()->IsCompatible(unod_map_int64_to_op2));
 }
+#endif  // !defined(DISABLE_ML_OPS)
 
 TEST_F(DataTypeTest, RecursiveVectorTest) {
   TypeProto seq_of_seq_string;
@@ -353,9 +380,12 @@ TEST_F(DataTypeTest, RecursiveVectorTest) {
   mut_seq->mutable_elem_type()->mutable_tensor_type()->set_elem_type(TensorProto_DataType_STRING);
 
   EXPECT_TRUE(DataTypeImpl::GetType<TestSequenceOfSequence>()->IsCompatible(seq_of_seq_string));
+#if !defined(DISABLE_ML_OPS)
   EXPECT_FALSE(DataTypeImpl::GetType<VectorMapStringToFloat>()->IsCompatible(seq_of_seq_string));
+#endif
 }
 
+#if !defined(DISABLE_ML_OPS)
 TEST_F(DataTypeTest, VectorMapStringToFloatTest) {
   TypeProto vector_map_string_to_float;
   vector_map_string_to_float.mutable_sequence_type()->mutable_elem_type()->mutable_map_type()->set_key_type(TensorProto_DataType_STRING);
@@ -366,11 +396,11 @@ TEST_F(DataTypeTest, VectorMapStringToFloatTest) {
   TensorTypeProto<TensorProto_DataType_FLOAT> tensor_type;
 
   EXPECT_TRUE(DataTypeImpl::GetType<VectorMapStringToFloat>()->IsCompatible(vector_map_string_to_float));
-  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapStringToFloat>()->IsCompatible(mapi2d_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapStringToFloat>()->IsCompatible(mapi2i_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapStringToFloat>()->IsCompatible(tensor_type));
+  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapStringToFloat>()->IsCompatible(mapi2d_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapStringToFloat>()->IsCompatible(mapi2i_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapStringToFloat>()->IsCompatible(tensor_type.proto));
   utils::ContainerChecker c_check(DataTypeImpl::GetType<VectorMapStringToFloat>());
-  bool result =  c_check.IsSequenceOf<MapStringToFloat>();
+  bool result = c_check.IsSequenceOf<MapStringToFloat>();
   EXPECT_TRUE(result);
 }
 
@@ -384,18 +414,165 @@ TEST_F(DataTypeTest, VectorMapInt64ToFloatTest) {
   TensorTypeProto<TensorProto_DataType_FLOAT> tensor_type;
 
   EXPECT_TRUE(DataTypeImpl::GetType<VectorMapInt64ToFloat>()->IsCompatible(type_proto));
-  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapInt64ToFloat>()->IsCompatible(mapi2d_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapInt64ToFloat>()->IsCompatible(mapi2i_type));
-  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapInt64ToFloat>()->IsCompatible(tensor_type));
+  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapInt64ToFloat>()->IsCompatible(mapi2d_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapInt64ToFloat>()->IsCompatible(mapi2i_type.proto));
+  EXPECT_FALSE(DataTypeImpl::GetType<VectorMapInt64ToFloat>()->IsCompatible(tensor_type.proto));
 }
+#endif  // !defined(DISABLE_ML_OPS)
 
-TEST_F(DataTypeTest, BFloat16Test) {
+TEST_F(DataTypeTest, MlFloat16ConvertFloatToMLFloat16) {
   // Test data type
   {
-    const float sample = 1.0f;
-    BFloat16 flt16(sample);
+    constexpr float sample = 1.0f;
+    const MLFloat16 flt16(sample);
     auto int_rep = flt16.val;
-    BFloat16 flt_from_int(int_rep);
+    const auto flt_from_int = MLFloat16::FromBits(int_rep);
+    const double diff = std::fabs(sample - flt_from_int.ToFloat());
+    if (diff > FLT_EPSILON || (std::isnan(diff) && !std::isnan(sample))) {
+      EXPECT_TRUE(false);
+    }
+  }
+  // Test bulk conversion
+  {
+    float sample[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+    std::vector<MLFloat16> converted;
+    std::transform(std::begin(sample), std::end(sample), std::back_inserter(converted),
+                   [](float fl) { return MLFloat16(fl); });
+    for (size_t i = 0; i < sizeof(sample) / sizeof(float); ++i) {
+      const double diff = std::fabs(sample[i] - converted[i].ToFloat());
+      if ((std::isnan(diff) && !std::isnan(sample[i])) || diff > FLT_EPSILON) {
+        FAIL();
+      }
+    }
+
+    std::vector<float> back_converted;
+    std::transform(converted.cbegin(), converted.cend(), std::back_inserter(back_converted),
+                   [](const MLFloat16 ml) { return (float)ml; });
+    for (size_t i = 0; i < sizeof(sample) / sizeof(float); ++i) {
+      const double diff = std::fabs(sample[i] - back_converted[i]);
+      if ((std::isnan(diff) && !std::isnan(sample[i])) || diff > FLT_EPSILON) {
+        FAIL();
+      }
+    }
+  }
+}
+
+TEST_F(DataTypeTest, MLFloat16Zeros) {
+  const auto positive_zero = MLFloat16::FromBits(0U);
+  EXPECT_FALSE(positive_zero.IsNegative());
+  const float float_positive_zero = static_cast<float>(positive_zero);
+  EXPECT_EQ(+0.0f, float_positive_zero);
+  EXPECT_FALSE(std::signbit(float_positive_zero));
+
+  const auto negative_zero = positive_zero.Negate();
+  EXPECT_TRUE(negative_zero.IsNegative());
+  const float float_positive_negzero = static_cast<float>(negative_zero);
+  EXPECT_EQ(-0.0f, float_positive_negzero);
+  EXPECT_TRUE(std::signbit(float_positive_negzero));
+
+  EXPECT_TRUE(positive_zero.IsNaNOrZero());
+  EXPECT_TRUE(negative_zero.IsNaNOrZero());
+}
+
+TEST_F(DataTypeTest, MLFloat16Comparision) {
+  const MLFloat16 left = MLFloat16(-33.33f);
+  const MLFloat16 left_same = MLFloat16(-33.33f);
+  const MLFloat16 right = MLFloat16(66.66f);
+  const MLFloat16 right_same = MLFloat16(66.66f);
+
+  EXPECT_TRUE(MLFloat16::Epsilon < right);
+
+  EXPECT_EQ(left, left_same);
+  EXPECT_NE(left, left_same.Negate());
+
+  EXPECT_EQ(right, right_same);
+  EXPECT_NE(right, right_same.Negate());
+
+  EXPECT_LT(left, right);
+  EXPECT_LT(right.Negate(), left);
+  EXPECT_LT(left.Negate(), right);
+}
+
+TEST_F(DataTypeTest, MLFloat16TestNAN) {
+  const MLFloat16 fp16NANFromSingle(std::numeric_limits<float>::quiet_NaN());
+  EXPECT_TRUE(fp16NANFromSingle.IsNaN());
+  EXPECT_TRUE(fp16NANFromSingle.IsNaNOrZero());
+
+  // NaN are not equal to each other
+  EXPECT_NE(MLFloat16::NaN, fp16NANFromSingle);
+
+  const float NanFromBFloat16 = fp16NANFromSingle.ToFloat();
+  EXPECT_TRUE(std::isnan(NanFromBFloat16));
+
+  EXPECT_FALSE(MLFloat16::FromBits(MLFloat16::kMaxValueBits).IsNaN());
+}
+
+TEST_F(DataTypeTest, MLFloat16NaNComparision) {
+  EXPECT_FALSE(MLFloat16::NaN < MLFloat16::NaN);
+  EXPECT_FALSE(MLFloat16::NaN == MLFloat16::NaN);
+
+  EXPECT_FALSE(MLFloat16::MaxValue < MLFloat16::NaN);
+  EXPECT_FALSE(MLFloat16::MaxValue == MLFloat16::NaN);
+  EXPECT_FALSE(MLFloat16::MinValue < MLFloat16::NaN);
+  EXPECT_FALSE(MLFloat16::NaN < MLFloat16::MaxValue);
+
+  EXPECT_TRUE(MLFloat16::MinValue < MLFloat16::MaxValue);
+}
+
+TEST_F(DataTypeTest, MLFloat16Infinity) {
+  EXPECT_FALSE(MLFloat16::MinValue.IsInfinity());
+  EXPECT_FALSE(MLFloat16::MaxValue.IsInfinity());
+  EXPECT_TRUE(MLFloat16::MaxValue.IsFinite());
+
+  const MLFloat16 pos_infinity_from_float(std::numeric_limits<float>::infinity());
+  EXPECT_TRUE(pos_infinity_from_float.IsInfinity());
+  EXPECT_FALSE(pos_infinity_from_float.IsFinite());
+  EXPECT_FALSE(pos_infinity_from_float.IsNegative());
+
+  const MLFloat16 neg_infinity_from_float(-std::numeric_limits<float>::infinity());
+  EXPECT_TRUE(neg_infinity_from_float.IsInfinity());
+  EXPECT_FALSE(neg_infinity_from_float.IsFinite());
+  EXPECT_TRUE(neg_infinity_from_float.IsNegative());
+
+  const float pos_infinity_from_bfloat16 = static_cast<float>(MLFloat16::Infinity);
+  EXPECT_TRUE(std::isinf(pos_infinity_from_bfloat16));
+  EXPECT_TRUE(!std::signbit(pos_infinity_from_bfloat16));
+}
+
+TEST_F(DataTypeTest, MLFloat16NormalSubnormal) {
+  EXPECT_FALSE(MLFloat16::Infinity.IsNormal());
+  EXPECT_TRUE(MLFloat16(45.6f).IsNormal());
+  EXPECT_FALSE(MLFloat16(45.6f).IsSubnormal());
+
+  // 0b0_0000_0000_000_0001 ~0.000000059604645
+  constexpr uint16_t min_subnormal_bits = 0x0001;
+  const MLFloat16 smallest_subnormal = MLFloat16::FromBits(min_subnormal_bits);
+  EXPECT_TRUE(smallest_subnormal.IsSubnormal());
+  EXPECT_FALSE(smallest_subnormal.IsNormal());
+
+  // float smallest positive subnormal is ~1.40129846432481707092E-45, and
+  // in float the same number above would be normal
+  const float float_from_smallest_subnormal = static_cast<float>(smallest_subnormal);
+  EXPECT_TRUE(std::isnormal(float_from_smallest_subnormal));
+
+  // 0b0_0000_0000_111_1111; ~0.000060975552
+  constexpr uint16_t max_subnormal_bits = 0x007F;
+  const MLFloat16 largest_subnormal = MLFloat16::FromBits(max_subnormal_bits);
+  EXPECT_TRUE(largest_subnormal.IsSubnormal());
+  EXPECT_FALSE(largest_subnormal.IsNormal());
+
+  // However, in float the same number above would be normal
+  const float float_from_largest_subnormal = static_cast<float>(largest_subnormal);
+  EXPECT_TRUE(std::isnormal(float_from_largest_subnormal));
+}
+
+TEST_F(DataTypeTest, BFloat16ConvertFloatToBFloat16) {
+  // Test data type
+  {
+    constexpr float sample = 1.0f;
+    const BFloat16 flt16(sample);
+    auto int_rep = flt16.val;
+    const auto flt_from_int = BFloat16::FromBits(int_rep);
     const double diff = std::fabs(sample - flt_from_int.ToFloat());
     if (diff > FLT_EPSILON || (std::isnan(diff) && !std::isnan(sample))) {
       EXPECT_TRUE(false);
@@ -409,7 +586,7 @@ TEST_F(DataTypeTest, BFloat16Test) {
     FloatToBFloat16(sample, converted, sizeof(sample) / sizeof(float));
     for (size_t i = 0; i < sizeof(sample) / sizeof(float); ++i) {
       const double diff = std::fabs(sample[i] - converted[i].ToFloat());
-      if (diff > FLT_EPSILON || (std::isnan(diff) && !std::isnan(sample[i]))) {
+      if ((std::isnan(diff) && !std::isnan(sample[i])) || diff > FLT_EPSILON) {
         EXPECT_TRUE(false);
       }
     }
@@ -418,11 +595,117 @@ TEST_F(DataTypeTest, BFloat16Test) {
     BFloat16ToFloat(converted, back_converted, sizeof(sample) / sizeof(float));
     for (size_t i = 0; i < sizeof(sample) / sizeof(float); ++i) {
       const double diff = std::fabs(sample[i] - back_converted[i]);
-      if (diff > FLT_EPSILON || (std::isnan(diff) && !std::isnan(sample[i]))) {
+      if ((std::isnan(diff) && !std::isnan(sample[i])) || diff > FLT_EPSILON) {
         EXPECT_TRUE(false);
       }
     }
   }
+}
+
+TEST_F(DataTypeTest, BFloat16Zeros) {
+  const auto positive_zero = BFloat16::FromBits(0U);
+  EXPECT_FALSE(positive_zero.IsNegative());
+  const float float_positive_zero = static_cast<float>(positive_zero);
+  EXPECT_EQ(+0.0f, float_positive_zero);
+  EXPECT_FALSE(std::signbit(float_positive_zero));
+
+  const auto negative_zero = positive_zero.Negate();
+  EXPECT_TRUE(negative_zero.IsNegative());
+  const float float_positive_negzero = static_cast<float>(negative_zero);
+  EXPECT_EQ(-0.0f, float_positive_negzero);
+  EXPECT_TRUE(std::signbit(float_positive_negzero));
+
+  EXPECT_TRUE(positive_zero.IsNaNOrZero());
+  EXPECT_TRUE(negative_zero.IsNaNOrZero());
+}
+
+TEST_F(DataTypeTest, BFloat16Comparision) {
+  const BFloat16 left = BFloat16(-33.33f);
+  const BFloat16 left_same = BFloat16(-33.33f);
+  const BFloat16 right = BFloat16(66.66f);
+  const BFloat16 right_same = BFloat16(66.66f);
+
+  EXPECT_TRUE(BFloat16::Epsilon < right);
+
+  EXPECT_EQ(left, left_same);
+  EXPECT_NE(left, left_same.Negate());
+
+  EXPECT_EQ(right, right_same);
+  EXPECT_NE(right, right_same.Negate());
+
+  EXPECT_LT(left, right);
+  EXPECT_LT(right.Negate(), left);
+  EXPECT_LT(left.Negate(), right);
+}
+
+TEST_F(DataTypeTest, BFloat16TestNAN) {
+  const BFloat16 fp16NANFromSingle = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_TRUE(fp16NANFromSingle.IsNaN());
+  EXPECT_TRUE(fp16NANFromSingle.IsNaNOrZero());
+  // NaN are not equal to each other
+  EXPECT_NE(BFloat16::NaN, fp16NANFromSingle);
+
+  float NanFromBFloat16 = fp16NANFromSingle.ToFloat();
+  EXPECT_TRUE(std::isnan(NanFromBFloat16));
+
+  EXPECT_FALSE(BFloat16::FromBits(BFloat16::kMaxValueBits).IsNaN());
+}
+
+TEST_F(DataTypeTest, BFloat16NaNComparision) {
+  EXPECT_FALSE(BFloat16::NaN < BFloat16::NaN);
+  EXPECT_FALSE(BFloat16::NaN == BFloat16::NaN);
+
+  EXPECT_FALSE(BFloat16::MaxValue < BFloat16::NaN);
+  EXPECT_FALSE(BFloat16::MaxValue == BFloat16::NaN);
+  EXPECT_FALSE(BFloat16::MinValue < BFloat16::NaN);
+  EXPECT_FALSE(BFloat16::NaN < BFloat16::MaxValue);
+
+  EXPECT_TRUE(BFloat16::MinValue < BFloat16::MaxValue);
+}
+
+TEST_F(DataTypeTest, BFloat16Infinity) {
+  EXPECT_FALSE(BFloat16::MinValue.IsInfinity());
+  EXPECT_FALSE(BFloat16::MaxValue.IsInfinity());
+  EXPECT_TRUE(BFloat16::MaxValue.IsFinite());
+
+  const BFloat16 pos_infinity_from_float = std::numeric_limits<float>::infinity();
+  EXPECT_TRUE(pos_infinity_from_float.IsInfinity());
+  EXPECT_FALSE(pos_infinity_from_float.IsFinite());
+  EXPECT_FALSE(pos_infinity_from_float.IsNegative());
+
+  const BFloat16 neg_infinity_from_float = -std::numeric_limits<float>::infinity();
+  EXPECT_TRUE(neg_infinity_from_float.IsInfinity());
+  EXPECT_FALSE(neg_infinity_from_float.IsFinite());
+  EXPECT_TRUE(neg_infinity_from_float.IsNegative());
+  EXPECT_TRUE(std::signbit(neg_infinity_from_float.ToFloat()));
+
+  const float pos_infinity_from_bfloat16 = static_cast<float>(BFloat16::Infinity);
+  EXPECT_TRUE(std::isinf(pos_infinity_from_bfloat16));
+  EXPECT_TRUE(!std::signbit(pos_infinity_from_bfloat16));
+}
+
+TEST_F(DataTypeTest, BFloat16NormalSubnormal) {
+  EXPECT_FALSE(BFloat16::Infinity.IsNormal());
+  EXPECT_TRUE(BFloat16(45.6f).IsNormal());
+  EXPECT_FALSE(BFloat16(45.6f).IsSubnormal());
+
+  // 0b0_0000_0000_000_0001
+  constexpr uint16_t min_subnormal_bits = 0x0001;
+  const BFloat16 smallest_subnormal = BFloat16::FromBits(min_subnormal_bits);
+  EXPECT_TRUE(smallest_subnormal.IsSubnormal());
+  EXPECT_FALSE(smallest_subnormal.IsNormal());
+
+  const float float_from_smallest_subnormal = (float)smallest_subnormal;
+  EXPECT_FALSE(std::isnormal(float_from_smallest_subnormal));
+
+  // 0b0_0000_0000_111_1111;
+  constexpr uint16_t max_subnormal_bits = 0x007F;
+  const BFloat16 largest_subnormal = BFloat16::FromBits(max_subnormal_bits);
+  EXPECT_TRUE(largest_subnormal.IsSubnormal());
+  EXPECT_FALSE(largest_subnormal.IsNormal());
+
+  const float float_from_largest_subnormal = (float)largest_subnormal;
+  EXPECT_FALSE(std::isnormal(float_from_largest_subnormal));
 }
 
 TEST_F(DataTypeTest, DataUtilsTest) {
@@ -476,7 +759,7 @@ TEST_F(DataTypeTest, DataUtilsTest) {
     // We expect that the above string will be matched in both cases
     // where we have shape and where we don't
     SparseTensorTypeProto<TensorProto_DataType_UINT64> sparse_proto;
-    DataType ten_dt = DataTypeUtils::ToType(sparse_proto);
+    DataType ten_dt = DataTypeUtils::ToType(sparse_proto.proto);
     EXPECT_NE(ten_dt, nullptr);
     EXPECT_EQ(tensor_uint64, *ten_dt);
     DataType ten_from_str = DataTypeUtils::ToType(*ten_dt);
@@ -485,8 +768,8 @@ TEST_F(DataTypeTest, DataUtilsTest) {
 
     // Now add empty shape, we expect the same string
     TensorShapeTypeProto<> shape_no_dims;
-    sparse_proto.SetShape(shape_no_dims);
-    ten_dt = DataTypeUtils::ToType(sparse_proto);
+    sparse_proto.SetShape(shape_no_dims.proto);
+    ten_dt = DataTypeUtils::ToType(sparse_proto.proto);
     EXPECT_NE(ten_dt, nullptr);
     EXPECT_EQ(tensor_uint64, *ten_dt);
     ten_from_str = DataTypeUtils::ToType(*ten_dt);
@@ -496,14 +779,16 @@ TEST_F(DataTypeTest, DataUtilsTest) {
     // Now add shape with dimensions, we expect no difference
     sparse_proto.ClearShape();
     TensorShapeTypeProto<10, 12> shape_with_dim;
-    sparse_proto.SetShape(shape_with_dim);
-    ten_dt = DataTypeUtils::ToType(sparse_proto);
+    sparse_proto.SetShape(shape_with_dim.proto);
+    ten_dt = DataTypeUtils::ToType(sparse_proto.proto);
     EXPECT_NE(ten_dt, nullptr);
     EXPECT_EQ(tensor_uint64, *ten_dt);
     ten_from_str = DataTypeUtils::ToType(*ten_dt);
     // Expect internalized strings
     EXPECT_EQ(ten_dt, ten_from_str);
   }
+
+#if !defined(DISABLE_ML_OPS)
   // Test Simple map
   {
     const std::string map_string_string("map(string,tensor(string))");
@@ -518,6 +803,7 @@ TEST_F(DataTypeTest, DataUtilsTest) {
     const auto& from_dt_proto = DataTypeUtils::ToTypeProto(map_dt);
     EXPECT_TRUE(DataTypeImpl::GetType<MapStringToString>()->IsCompatible(from_dt_proto));
   }
+
   // Test map with recursive value
   {
     const std::string map_int_map_int_float("map(int64,map(int64,tensor(float)))");
@@ -532,6 +818,7 @@ TEST_F(DataTypeTest, DataUtilsTest) {
     const auto& from_dt_proto = DataTypeUtils::ToTypeProto(map_dt);
     EXPECT_TRUE(DataTypeImpl::GetType<TestMapToMapInt64ToFloat>()->IsCompatible(from_dt_proto));
   }
+
   {
     const std::string opaque_map_2("map(int64,opaque(test_domain_2,test_name_2))");
     const auto* map_proto = DataTypeImpl::GetType<MyOpaqueMapCpp_2>()->GetTypeProto();
@@ -545,6 +832,7 @@ TEST_F(DataTypeTest, DataUtilsTest) {
     const auto& from_dt_proto = DataTypeUtils::ToTypeProto(map_dt);
     EXPECT_TRUE(DataTypeImpl::GetType<MyOpaqueMapCpp_2>()->IsCompatible(from_dt_proto));
   }
+
   // Test Sequence with recursion
   {
     const std::string seq_map_str_float("seq(map(string,tensor(float)))");
@@ -559,6 +847,8 @@ TEST_F(DataTypeTest, DataUtilsTest) {
     const auto& from_dt_proto = DataTypeUtils::ToTypeProto(seq_dt);
     EXPECT_TRUE(DataTypeImpl::GetType<VectorMapStringToFloat>()->IsCompatible(from_dt_proto));
   }
+#endif
+
   // Test Sequence with opaque_2
   {
     const std::string seq_opaque_2("seq(opaque(test_domain_2,test_name_2))");
@@ -628,6 +918,55 @@ TEST_F(DataTypeTest, DataUtilsTest) {
     EXPECT_EQ(op_dt, op_from_str);
     const auto& from_dt_proto = DataTypeUtils::ToTypeProto(op_dt);
     EXPECT_TRUE(DataTypeImpl::GetType<TestOpaqueNoNames>()->IsCompatible(from_dt_proto));
+  }
+}
+
+#ifndef DISABLE_ABSEIL
+
+template <typename T>
+using Calc = CalculateInlinedVectorDefaultInlinedElements<T>;
+
+template <typename... Types>
+struct TypeMinimunInlinedElements {
+  std::array<std::pair<size_t, size_t>, sizeof...(Types)> sizes_{std::make_pair(sizeof(Types), Calc<Types>::value)...};
+  void print(std::ostream& os) const {
+    os << " CalculateInlinedVectorDefaultInlinedElements Sizes: ";
+    for (auto& p : sizes_) {
+      os << p.first << " -> " << p.second << std::endl;
+    }
+    os << std::endl;
+  }
+};
+
+TEST(InlinedVectorTests, TestDefaultInlinedCapacity) {
+  // We want to test all the type here
+  TypeMinimunInlinedElements<int8_t, int16_t, int32_t, int64_t, std::string> sizes;
+  sizes.print(std::cout);
+}
+
+#endif  // ! DISABLE_ABSEIL
+
+TEST(TypeLiterals, Tests) {
+  {
+    // uint16_t test
+    MLFloat16 mlfloat = MLFloat16::FromBits(static_cast<uint16_t>(16));
+    auto mlfloat_literal = 16_f16;
+    ASSERT_EQ(mlfloat, mlfloat_literal);
+
+    BFloat16 bfloat{static_cast<uint16_t>(16), BFloat16::FromBits()};
+    auto bfloat_literal = 16_b16;
+    ASSERT_EQ(bfloat, bfloat_literal);
+  }
+
+  {
+    // float
+    MLFloat16 mlfloat{17.0f};
+    auto mlfloat_literal = 17.0_fp16;
+    ASSERT_EQ(mlfloat, mlfloat_literal);
+
+    BFloat16 bfloat{17.0f};
+    auto bfloat_literal = 17.0_bfp16;
+    ASSERT_EQ(bfloat, bfloat_literal);
   }
 }
 

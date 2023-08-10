@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include "core/framework/allocatormgr.h"
 #include "core/framework/execution_provider.h"
 #include "core/graph/constants.h"
 
@@ -25,37 +24,20 @@ using FuseRuleFn = std::function<void(const onnxruntime::GraphViewer&,
 // Logical device representation.
 class CPUExecutionProvider : public IExecutionProvider {
  public:
-  explicit CPUExecutionProvider(const CPUExecutionProviderInfo& info)
-      : IExecutionProvider{onnxruntime::kCpuExecutionProvider} {
-    DeviceAllocatorRegistrationInfo device_info{OrtMemTypeDefault,
-                                                [](int) { return onnxruntime::make_unique<TAllocator>(); },
-                                                std::numeric_limits<size_t>::max()};
-
-#ifdef USE_JEMALLOC
-#if defined(USE_MIMALLOC)
-#error jemalloc and mimalloc should not both be enabled
-#endif
-
-    ORT_UNUSED_PARAMETER(info);
-    //JEMalloc already has memory pool, so just use device allocator.
-    InsertAllocator(device_info.factory(0));
-#else
-//Disable Arena allocator for x86_32 build because it may run into infinite loop when integer overflow happens
-#if defined(__amd64__) || defined(_M_AMD64)
-    if (info.create_arena)
-      InsertAllocator(CreateAllocator(device_info));
-    else
-#else
-    ORT_UNUSED_PARAMETER(info);
-#endif
-      InsertAllocator(device_info.factory(0));
-#endif
-  }
+  // delay_allocator_registration = true is used to allow sharing of allocators between different providers that are
+  // associated with the same device
+  explicit CPUExecutionProvider(const CPUExecutionProviderInfo& info);
 
   std::shared_ptr<KernelRegistry> GetKernelRegistry() const override;
   std::unique_ptr<IDataTransfer> GetDataTransfer() const override;
+  std::vector<AllocatorPtr> CreatePreferredAllocators() override;
 
  private:
+  CPUExecutionProviderInfo info_;
   std::vector<FuseRuleFn> fuse_rules_;
 };
+
+// Registers all available CPU kernels
+Status RegisterCPUKernels(KernelRegistry& kernel_registry);
+
 }  // namespace onnxruntime

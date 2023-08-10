@@ -11,13 +11,20 @@ namespace test {
 static void RunTest(const std::vector<float>& x_vals,
                     const std::vector<float>& expected_vals,
                     const std::vector<int64_t>& dimensions,
+                    int opset = 7,
                     int64_t axis = 1,
                     OpTester::ExpectResult expect_result = OpTester::ExpectResult::kExpectSuccess,
                     const std::string& expected_err_str = "") {
-  OpTester test("Hardmax");
+  OpTester test("Hardmax", opset);
 
-  if (axis != 1) {
-    test.AddAttribute("axis", axis);
+  if (opset < 13) {
+    if (axis != 1) {  // opset-12 and below : default axis value is 1
+      test.AddAttribute("axis", axis);
+    }
+  } else {
+    if (axis != -1) {  // opset-13 : default axis value is -1
+      test.AddAttribute("axis", axis);
+    }
   }
 
   test.AddInput<float>("X", dimensions, x_vals);
@@ -26,7 +33,7 @@ static void RunTest(const std::vector<float>& x_vals,
 }
 
 TEST(HardmaxOperator, Simple) {
-  // https://github.com/onnx/onnx/blob/master/docs/Operators.md#Hardmax
+  // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Hardmax
   std::vector<float> x_vals = {-1.0f, 0.0f, 1.0f};
   std::vector<float> expected_vals = {0.0f, 0.0f, 1.0f};
   std::vector<int64_t> dimensions = {1, 3};
@@ -46,8 +53,8 @@ TEST(HardmaxOperator, LargeNumber) {
   RunTest(x_vals, expected_vals, dimensions);
 }
 
-//np.random.seed(123) # Use a seed so we can replicate the input and expected values here and in python
-//x = np.abs(np.random.randn(3, 4, 5).astype(np.float32))
+// np.random.seed(123) # Use a seed so we can replicate the input and expected values here and in python
+// x = np.abs(np.random.randn(3, 4, 5).astype(np.float32))
 static std::vector<int64_t> three_dimensions = {3, 4, 5};
 static std::vector<float> x_vals_3dims = {
     1.0856307f, 0.99734545f, 0.2829785f, 1.5062947f, 0.5786002f,
@@ -85,7 +92,7 @@ TEST(HardmaxOperator, ThreeDimsAxis0) {
       0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
       0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 
-  RunTest(x_vals_3dims, expected_vals, three_dimensions, /*axis*/ 0);
+  RunTest(x_vals_3dims, expected_vals, three_dimensions, /*opset*/ 7, /*axis*/ 0);
 }
 
 TEST(HardmaxOperator, ThreeDimsAxis1) {
@@ -108,9 +115,31 @@ TEST(HardmaxOperator, ThreeDimsAxis1) {
       0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
       0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 
-  RunTest(x_vals_3dims, expected_vals, three_dimensions, /*axis*/ 1);
+  RunTest(x_vals_3dims, expected_vals, three_dimensions, /*opset*/ 7, /*axis*/ 1);
 }
 
+TEST(HardmaxOperator, ThreeDimsAxis1_opset13) {
+  // For the same input, opset-13's behavior is different from an earlier opset
+  // and we see different expected results for the same test input
+
+  std::vector<float> expected_vals = {
+      0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+      1.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+      0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+
+      1.0f, 0.0f, 0.0f, 1.0f, 1.0f,
+      0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 1.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+
+      0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+      1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 1.0f, 0.0f};
+
+  RunTest(x_vals_3dims, expected_vals, three_dimensions, /*opset*/ 13, /*axis*/ 1);
+}
 TEST(HardmaxOperator, ThreeDimsAxis2) {
   // x = <see x_vals_3dims>
   // import cntk as C
@@ -131,7 +160,47 @@ TEST(HardmaxOperator, ThreeDimsAxis2) {
       0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
       0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
 
-  RunTest(x_vals_3dims, expected_vals, three_dimensions, /*axis*/ 2);
+  RunTest(x_vals_3dims, expected_vals, three_dimensions, /*opset*/ 7, /*axis*/ 2);
+}
+
+TEST(HardmaxOperator, ThreeDimsAxis2_opset13) {
+  std::vector<float> expected_vals = {
+      0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+
+  RunTest(x_vals_3dims, expected_vals, three_dimensions, /*opset*/ 13, /*axis*/ 2);
+}
+
+TEST(HardmaxOperator, ThreeDimsDefaultAxis_opset13) {
+  std::vector<float> expected_vals = {
+      0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+
+  RunTest(x_vals_3dims, expected_vals, three_dimensions, /*opset*/ 13, /*default axis*/ -1);
 }
 
 TEST(HardmaxOperator, ThreeDimsNegAxis2) {
@@ -154,7 +223,7 @@ TEST(HardmaxOperator, ThreeDimsNegAxis2) {
       0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
       0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
 
-  RunTest(x_vals_3dims, expected_vals, three_dimensions, /*axis*/ -1);
+  RunTest(x_vals_3dims, expected_vals, three_dimensions, /*opset*/ 7, /*axis*/ -1);
 }
 
 }  // namespace test

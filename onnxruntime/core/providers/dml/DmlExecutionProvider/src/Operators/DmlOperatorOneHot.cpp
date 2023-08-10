@@ -37,7 +37,7 @@ public:
                 TensorAxis::DoNotCoerce,
                 TensorAxis::W,
                 TensorAxis::RightAligned,
-                NchwDimensionCount, // minDimensionCount
+                1, // minDimensionCount
                 0
             );
 
@@ -49,7 +49,7 @@ public:
                 TensorAxis::DoNotCoerce,
                 TensorAxis::W,
                 TensorAxis::RightAligned,
-                NchwDimensionCount, // minDimensionCount
+                1, // minDimensionCount
                 0
             );
 

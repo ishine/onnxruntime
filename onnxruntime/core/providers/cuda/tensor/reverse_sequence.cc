@@ -5,8 +5,6 @@
 #include "reverse_sequence_impl.h"
 
 #include "core/providers/cpu/tensor/utils.h"
-#include "core/providers/common.h"
-#include "core/framework/utils.h"
 
 namespace onnxruntime {
 namespace cuda {
@@ -16,15 +14,16 @@ ONNX_OPERATOR_KERNEL_EX(
     kOnnxDomain,
     10,
     kCudaExecutionProvider,
-    KernelDefBuilder().TypeConstraint("T", DataTypeImpl::AllFixedSizeTensorTypes()),
+    (*KernelDefBuilder::Create()).TypeConstraint("T", DataTypeImpl::AllFixedSizeTensorTypes()),
     ReverseSequenceOp);
 
 #define ReverseSequenceCallCudaImplTypeAs(T, TEqual)                                                 \
-  if (X.IsDataType<T>()) {                                                    \
+  if (X.IsDataType<T>()) {                                                                           \
     CUDA_RETURN_IF_ERROR(ReverseSequenceCudaImpl(                                                    \
-        reinterpret_cast<const typename ToCudaType<TEqual>::MappedType*>(X.template Data<T>()),      \
+        Stream(context),                                                                             \
+        reinterpret_cast<const typename ToCudaType<TEqual>::MappedType*>(X.Data<T>()),               \
         seq_lengths.Data<int64_t>(),                                                                 \
-        reinterpret_cast<typename ToCudaType<TEqual>::MappedType*>(Y.template MutableData<T>()),     \
+        reinterpret_cast<typename ToCudaType<TEqual>::MappedType*>(Y.MutableData<T>()),              \
         gsl::narrow<int>(batch_size), gsl::narrow<int>(max_seq_len), gsl::narrow<int>(element_size), \
         time_major_));                                                                               \
     return Status::OK();                                                                             \

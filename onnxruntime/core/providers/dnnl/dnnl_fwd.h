@@ -8,4 +8,4 @@ namespace ort_dnnl {
 template <typename T>
 KernelCreateInfo BuildKernelCreateInfo();
 }
-}
+}  // namespace onnxruntime

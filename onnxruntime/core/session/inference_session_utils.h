@@ -3,26 +3,39 @@
 
 #pragma once
 
+#include "core/flatbuffers/schema/ort.fbs.h"
+
+#if !defined(ORT_MINIMAL_BUILD)
+//
+// Includes to parse json session config from onnx model file
+//
+#include "core/graph/onnx_protobuf.h"
 #include "core/session/inference_session.h"
 #include "core/framework/session_options.h"
+#include "core/framework/tuning_results.h"
 #include "core/common/common.h"
-#include "single_include/nlohmann/json.hpp"
-
+#include "nlohmann/json.hpp"
 using json = nlohmann::json;
+#endif
 
 namespace onnxruntime {
 
 namespace inference_session_utils {
 
-static const std::string kOrtConfigKey = "ort_config";
-static const std::string kSessionOptionsKey = "session_options";
-static const std::string kOrtLoadConfigFromModelEnvVar = "ORT_LOAD_CONFIG_FROM_MODEL";
+// need this value to be accessible in all builds in order to report error for attempted usage in a minimal build
+static constexpr const char* kOrtLoadConfigFromModelEnvVar = "ORT_LOAD_CONFIG_FROM_MODEL";
 
-}  // namespace inference_session_utils
+#if !defined(ORT_MINIMAL_BUILD)
+//
+// Code to parse json session config from onnx model file
+//
+static constexpr const char* kOrtConfigKey = "ort_config";
+static constexpr const char* kSessionOptionsKey = "session_options";
+static constexpr const char* kTuningResultsKeys = "tuning_results";
 
-class InferenceSessionUtils {
+class JsonConfigParser {
  public:
-  InferenceSessionUtils(const logging::Logger& logger) : logger_(logger) {
+  JsonConfigParser(const logging::Logger& logger) : logger_(logger) {
   }
 
   Status ParseOrtConfigJsonInModelProto(const ONNX_NAMESPACE::ModelProto& model_proto);
@@ -45,4 +58,11 @@ class InferenceSessionUtils {
   bool is_ort_config_json_available_ = false;
 };
 
+Status ParseTuningResultsFromModelMetadata(const onnxruntime::ModelMetadata& metadata,
+                                           /*out*/ std::vector<TuningResults>& results,
+                                           /*out*/ bool& key_found);
+
+#endif  // !defined(ORT_MINIMAL_BUILD)
+
+}  // namespace inference_session_utils
 }  // namespace onnxruntime

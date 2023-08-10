@@ -16,24 +16,39 @@ limitations under the License.
 
 #include "core/platform/env.h"
 
-#include <unistd.h>
+#include <assert.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <ftw.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <stdio.h>
-#include <fcntl.h>
 #include <stdlib.h>
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <dlfcn.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include <iostream>
+#include <optional>
 #include <thread>
 #include <utility>  // for std::forward
 #include <vector>
-#include <assert.h>
+
+// We can not use CPUINFO if it is not supported and we do not want to used
+// it on certain platforms because of the binary size increase.
+// We could use it to find out the number of physical cores for certain supported platforms
+#if defined(CPUINFO_SUPPORTED) && !defined(__APPLE__) && !defined(__ANDROID__) && !defined(__wasm__) && !defined(_AIX)
+#include <cpuinfo.h>
+#define ORT_USE_CPUINFO
+#endif
 
 #include "core/common/common.h"
+#include "core/common/gsl.h"
 #include "core/common/logging/logging.h"
+#include "core/common/narrow.h"
 #include "core/platform/scoped_resource.h"
+#include "core/platform/EigenNonBlockingThreadPool.h"
 
 namespace onnxruntime {
 
@@ -47,14 +62,41 @@ class UnmapFileParam {
   size_t len;
 };
 
+/**
+ * @brief Get System Error
+ *
+ * @return a pair of {errno, error message}
+ */
+static std::pair<int, std::string> GetSystemError(int e) {
+  char buf[1024];
+  const char* msg = "";
+  if (e > 0) {
+#if defined(__GLIBC__) && defined(_GNU_SOURCE) && !defined(__ANDROID__)
+    msg = strerror_r(e, buf, sizeof(buf));
+#else
+    // for Mac OS X and Android lower than API 23
+    if (strerror_r(e, buf, sizeof(buf)) != 0) {
+      buf[0] = '\0';
+    }
+    msg = buf;
+#endif
+  }
+
+  return std::make_pair(e, msg);
+}
+
+static std::pair<int, std::string> GetSystemError() {
+  auto e = errno;
+  return GetSystemError(e);
+}
+
 static void UnmapFile(void* param) noexcept {
-  UnmapFileParam* p = reinterpret_cast<UnmapFileParam*>(param);
+  std::unique_ptr<UnmapFileParam> p(reinterpret_cast<UnmapFileParam*>(param));
   int ret = munmap(p->addr, p->len);
   if (ret != 0) {
-    int err = errno;
-    LOGS_DEFAULT(ERROR) << "munmap failed. error code: " << err;
+    auto [err_no, err_msg] = GetSystemError();
+    LOGS_DEFAULT(ERROR) << "munmap failed. error code: " << err_no << " error msg: " << err_msg;
   }
-  delete p;
 }
 
 struct FileDescriptorTraits {
@@ -62,8 +104,8 @@ struct FileDescriptorTraits {
   static Handle GetInvalidHandleValue() { return -1; }
   static void CleanUp(Handle h) {
     if (close(h) == -1) {
-      const int err = errno;
-      LOGS_DEFAULT(ERROR) << "Failed to close file descriptor " << h << " - error code: " << err;
+      auto [err_no, err_msg] = GetSystemError();
+      LOGS_DEFAULT(ERROR) << "Failed to close file descriptor " << h << " - error code: " << err_no << " error msg: " << err_msg;
     }
   }
 };
@@ -83,6 +125,171 @@ long int TempFailureRetry(TFunc retriable_operation, TFuncArgs&&... args) {
   return result;
 }
 
+// nftw() callback to remove a file
+int nftw_remove(
+    const char* fpath, const struct stat* /*sb*/,
+    int /*typeflag*/, struct FTW* /*ftwbuf*/) {
+  const auto result = remove(fpath);
+  if (result != 0) {
+    auto [err_no, err_msg] = GetSystemError();
+    LOGS_DEFAULT(WARNING) << "remove() failed. Error code: " << err_no << " error msg: " << err_msg
+                          << ", path: " << fpath;
+  }
+  return result;
+}
+
+template <typename T>
+struct Freer {
+  void operator()(T* p) { ::free(p); }
+};
+
+using MallocdStringPtr = std::unique_ptr<char, Freer<char> >;
+
+class PosixThread : public EnvThread {
+ private:
+  struct Param {
+    const ORTCHAR_T* name_prefix;
+    int index;
+    unsigned (*start_address)(int id, Eigen::ThreadPoolInterface* param);
+    Eigen::ThreadPoolInterface* param;
+    std::optional<LogicalProcessors> affinity;
+
+    Param(const ORTCHAR_T* name_prefix1,
+          int index1,
+          unsigned (*start_address1)(int id, Eigen::ThreadPoolInterface* param),
+          Eigen::ThreadPoolInterface* param1)
+        : name_prefix(name_prefix1),
+          index(index1),
+          start_address(start_address1),
+          param(param1) {}
+  };
+
+ public:
+  PosixThread(const ORTCHAR_T* name_prefix, int index,
+              unsigned (*start_address)(int id, Eigen::ThreadPoolInterface* param), Eigen::ThreadPoolInterface* param,
+              const ThreadOptions& thread_options) {
+    ORT_ENFORCE(index >= 0, "Negative thread index is not allowed");
+    custom_create_thread_fn = thread_options.custom_create_thread_fn;
+    custom_thread_creation_options = thread_options.custom_thread_creation_options;
+    custom_join_thread_fn = thread_options.custom_join_thread_fn;
+
+    auto param_ptr = std::make_unique<Param>(name_prefix, index, start_address, param);
+    if (narrow<size_t>(index) < thread_options.affinities.size()) {
+      param_ptr->affinity = thread_options.affinities[index];
+    }
+
+    if (custom_create_thread_fn) {
+      custom_thread_handle = custom_create_thread_fn(custom_thread_creation_options, CustomThreadMain, param_ptr.get());
+      if (!custom_thread_handle) {
+        ORT_THROW("custom_create_thread_fn returned invalid handle.");
+      }
+      param_ptr.release();
+    } else {
+      pthread_attr_t attr;
+      int s = pthread_attr_init(&attr);
+      if (s != 0) {
+        auto [err_no, err_msg] = GetSystemError();
+        ORT_THROW("pthread_attr_init failed, error code: ", err_no, " error msg: ", err_msg);
+      }
+
+      size_t stack_size = thread_options.stack_size;
+#if defined(__wasm__)
+      // emscripten 3.1.37 has a bug which does not take build flags 'STACK_SIZE' or 'DEFAULT_PTHREAD_STACK_SIZE'.
+      // the pthread stack size will always be 64kB, which is insufficient to run some kernels.
+      // we set the stack_size to a bigger value
+      //
+      // https://github.com/emscripten-core/emscripten/issues/19302
+      //
+      // TODO: once this issue is fixed by emscripten's new release, remove this code.
+      //       future changes to DEFAULT_PTHREAD_STACK_SIZE will be in the following files
+      //       - cmake/onnxruntime_unittests.cmake (target onnxruntime_test_all)
+      //       - cmake/onnxruntime_webassembly.cmake (target onnxruntime_webassembly)
+      //
+      if (stack_size == 0) {
+        stack_size = 131072;
+      }
+#endif
+      if (stack_size > 0) {
+        s = pthread_attr_setstacksize(&attr, stack_size);
+        if (s != 0) {
+          auto [err_no, err_msg] = GetSystemError();
+          ORT_THROW("pthread_attr_setstacksize failed, error code: ", err_no, " error msg: ", err_msg);
+        }
+      }
+
+      s = pthread_create(&hThread, &attr, ThreadMain, param_ptr.get());
+      if (s != 0) {
+        auto [err_no, err_msg] = GetSystemError();
+        ORT_THROW("pthread_create failed, error code: ", err_no, " error msg: ", err_msg);
+      }
+      param_ptr.release();
+      // Do not throw beyond this point so we do not lose thread handle and then not being able to join it.
+    }
+  }
+
+  ~PosixThread() override {
+    if (custom_thread_handle) {
+      custom_join_thread_fn(custom_thread_handle);
+      custom_thread_handle = nullptr;
+    } else {
+      void* res;
+#ifdef NDEBUG
+      pthread_join(hThread, &res);
+#else
+      int ret = pthread_join(hThread, &res);
+      assert(ret == 0);
+#endif
+    }
+  }
+
+ private:
+  static void* ThreadMain(void* param) {
+    std::unique_ptr<Param> p(static_cast<Param*>(param));
+    ORT_TRY {
+#if !defined(__APPLE__) && !defined(__ANDROID__) && !defined(__wasm__) && !defined(_AIX)
+      if (p->affinity.has_value() && !p->affinity->empty()) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        for (auto id : *p->affinity) {
+          if (id > -1 && id < CPU_SETSIZE) {
+            CPU_SET(id, &cpuset);
+          } else {
+            // Logical processor id starts from 0 internally, but in ort API, it starts from 1,
+            // that's why id need to increase by 1 when logging.
+            LOGS_DEFAULT(ERROR) << "cpu " << id + 1 << " does not exist, skipping it for affinity setting";
+          }
+        }
+        auto ret = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+        if (0 == ret) {
+          LOGS_DEFAULT(VERBOSE) << "pthread_setaffinity_np succeed for thread: " << syscall(SYS_gettid)
+                                << ", index: " << p->index
+                                << ", mask: " << *p->affinity;
+        } else {
+          auto [err_no, err_msg] = GetSystemError(ret);
+#if !defined(USE_MIGRAPHX)
+          LOGS_DEFAULT(ERROR) << "pthread_setaffinity_np failed for thread: " << syscall(SYS_gettid)
+                              << ", index: " << p->index
+                              << ", mask: " << *p->affinity
+                              << ", error code: " << err_no << " error msg: " << err_msg
+                              << ". Specify the number of threads explicitly so the affinity is not set.";
+#endif
+        }
+      }
+#endif
+      // Ignore the returned value for now
+      p->start_address(p->index, p->param);
+    }
+    ORT_CATCH(...) {
+      // Ignore exceptions
+    }
+    return nullptr;
+  }
+  static void CustomThreadMain(void* param) {
+    ThreadMain(param);
+  }
+  pthread_t hThread;
+};
+
 class PosixEnv : public Env {
  public:
   static PosixEnv& Instance() {
@@ -90,11 +297,51 @@ class PosixEnv : public Env {
     return default_env;
   }
 
-  int GetNumCpuCores() const override {
-    // TODO if you need the number of physical cores you'll need to parse
-    // /proc/cpuinfo and grep for "cpu cores".
-    //However, that information is not always available(output of 'grep -i core /proc/cpuinfo' is empty)
-    return std::thread::hardware_concurrency();
+  EnvThread* CreateThread(const ORTCHAR_T* name_prefix, int index,
+                          unsigned (*start_address)(int id, Eigen::ThreadPoolInterface* param),
+                          Eigen::ThreadPoolInterface* param, const ThreadOptions& thread_options) override {
+    return new PosixThread(name_prefix, index, start_address, param, thread_options);
+  }
+
+  // we are guessing the number of phys cores based on a popular HT case (2 logical proc per core)
+  static int DefaultNumCores() {
+    return std::max(1, static_cast<int>(std::thread::hardware_concurrency() / 2));
+  }
+
+  // Return the number of physical cores
+  int GetNumPhysicalCpuCores() const override {
+#ifdef ORT_USE_CPUINFO
+    if (cpuinfo_available_) {
+      return narrow<int>(cpuinfo_get_cores_count());
+    }
+#endif  // ORT_USE_CPUINFO
+    return DefaultNumCores();
+  }
+
+  std::vector<LogicalProcessors> GetDefaultThreadAffinities() const override {
+    std::vector<LogicalProcessors> ret;
+#ifdef ORT_USE_CPUINFO
+    if (cpuinfo_available_) {
+      auto num_phys_cores = cpuinfo_get_cores_count();
+      ret.reserve(num_phys_cores);
+      for (uint32_t i = 0; i < num_phys_cores; ++i) {
+        const auto* core = cpuinfo_get_core(i);
+        LogicalProcessors th_aff;
+        th_aff.reserve(core->processor_count);
+        auto log_proc_idx = core->processor_start;
+        for (uint32_t count = 0; count < core->processor_count; count++, ++log_proc_idx) {
+          const auto* log_proc = cpuinfo_get_processor(log_proc_idx);
+          th_aff.push_back(log_proc->linux_id);
+        }
+        ret.push_back(std::move(th_aff));
+      }
+    }
+#endif
+    // Just the size of the thread-pool
+    if (ret.empty()) {
+      ret.resize(GetNumPhysicalCpuCores());
+    }
+    return ret;
   }
 
   void SleepForMicroseconds(int64_t micros) const override {
@@ -104,11 +351,12 @@ class PosixEnv : public Env {
       sleep_time.tv_nsec = 0;
 
       if (micros >= OneMillion) {
-        sleep_time.tv_sec = std::min<int64_t>(micros / OneMillion, std::numeric_limits<time_t>::max());
+        sleep_time.tv_sec = static_cast<time_t>(std::min<int64_t>(micros / OneMillion,
+                                                                  std::numeric_limits<time_t>::max()));
         micros -= static_cast<int64_t>(sleep_time.tv_sec) * OneMillion;
       }
       if (micros < OneMillion) {
-        sleep_time.tv_nsec = 1000 * micros;
+        sleep_time.tv_nsec = static_cast<decltype(timespec::tv_nsec)>(1000 * micros);
         micros = 0;
       }
       while (nanosleep(&sleep_time, &sleep_time) != 0 && errno == EINTR) {
@@ -121,39 +369,48 @@ class PosixEnv : public Env {
     return getpid();
   }
 
-  Status GetFileLength(const ORTCHAR_T* file_path, size_t& length) const override {
+  Status GetFileLength(const PathChar* file_path, size_t& length) const override {
     ScopedFileDescriptor file_descriptor{open(file_path, O_RDONLY)};
-    if (file_descriptor.Get() < 0) {
-      return ReportSystemError("open", file_path);
+    return GetFileLength(file_descriptor.Get(), length);
+  }
+
+  common::Status GetFileLength(int fd, /*out*/ size_t& file_size) const override {
+    using namespace common;
+    if (fd < 0) {
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Invalid fd was supplied: ", fd);
     }
 
-    struct stat stbuf;
-    if (fstat(file_descriptor.Get(), &stbuf) != 0) {
-      return ReportSystemError("fstat", file_path);
+    struct stat buf;
+    int rc = fstat(fd, &buf);
+    if (rc < 0) {
+      return ReportSystemError("fstat", "");
     }
 
-    if (!S_ISREG(stbuf.st_mode)) {
-      return common::Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT,
-                            "GetFileLength: input is not a regular file");
+    if (buf.st_size < 0) {
+      return ORT_MAKE_STATUS(SYSTEM, FAIL, "Received negative size from stat call");
     }
 
-    length = static_cast<size_t>(stbuf.st_size);
+    if (static_cast<unsigned long long>(buf.st_size) > std::numeric_limits<size_t>::max()) {
+      return ORT_MAKE_STATUS(SYSTEM, FAIL, "File is too large.");
+    }
+
+    file_size = static_cast<size_t>(buf.st_size);
     return Status::OK();
   }
 
-  Status ReadFileIntoBuffer(
-      const ORTCHAR_T* file_path, FileOffsetType offset, size_t length,
-      gsl::span<char> buffer) const override {
-    ORT_RETURN_IF_NOT(file_path);
-    ORT_RETURN_IF_NOT(offset >= 0);
-    ORT_RETURN_IF_NOT(length <= buffer.size());
+  Status ReadFileIntoBuffer(const ORTCHAR_T* file_path, FileOffsetType offset, size_t length,
+                            gsl::span<char> buffer) const override {
+    ORT_RETURN_IF_NOT(file_path, "file_path == nullptr");
+    ORT_RETURN_IF_NOT(offset >= 0, "offset < 0");
+    ORT_RETURN_IF_NOT(length <= buffer.size(), "length > buffer.size()");
 
     ScopedFileDescriptor file_descriptor{open(file_path, O_RDONLY)};
     if (!file_descriptor.IsValid()) {
       return ReportSystemError("open", file_path);
     }
 
-    if (length == 0) return Status::OK();
+    if (length == 0)
+      return Status::OK();
 
     if (offset > 0) {
       const FileOffsetType seek_result = lseek(file_descriptor.Get(), offset, SEEK_SET);
@@ -168,16 +425,16 @@ class PosixEnv : public Env {
       const size_t bytes_remaining = length - total_bytes_read;
       const size_t bytes_to_read = std::min(bytes_remaining, k_max_bytes_to_read);
 
-      const ssize_t bytes_read = TempFailureRetry(read, file_descriptor.Get(), buffer.data() + total_bytes_read, bytes_to_read);
+      const ssize_t bytes_read =
+          TempFailureRetry(read, file_descriptor.Get(), buffer.data() + total_bytes_read, bytes_to_read);
 
       if (bytes_read == -1) {
         return ReportSystemError("read", file_path);
       }
 
       if (bytes_read == 0) {
-        return ORT_MAKE_STATUS(
-            ONNXRUNTIME, FAIL, "ReadFileIntoBuffer - unexpected end of file. ",
-            "File: ", file_path, ", offset: ", offset, ", length: ", length);
+        return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "ReadFileIntoBuffer - unexpected end of file. ", "File: ", file_path,
+                               ", offset: ", offset, ", length: ", length);
       }
 
       total_bytes_read += bytes_read;
@@ -186,11 +443,10 @@ class PosixEnv : public Env {
     return Status::OK();
   }
 
-  Status MapFileIntoMemory(
-      const ORTCHAR_T* file_path, FileOffsetType offset, size_t length,
-      MappedMemoryPtr& mapped_memory) const override {
-    ORT_RETURN_IF_NOT(file_path);
-    ORT_RETURN_IF_NOT(offset >= 0);
+  Status MapFileIntoMemory(const ORTCHAR_T* file_path, FileOffsetType offset, size_t length,
+                           MappedMemoryPtr& mapped_memory) const override {
+    ORT_RETURN_IF_NOT(file_path, "file_path == nullptr");
+    ORT_RETURN_IF_NOT(offset >= 0, "offset < 0");
 
     ScopedFileDescriptor file_descriptor{open(file_path, O_RDONLY)};
     if (!file_descriptor.IsValid()) {
@@ -202,44 +458,59 @@ class PosixEnv : public Env {
       return Status::OK();
     }
 
-    static const long page_size = sysconf(_SC_PAGESIZE);
+    static const size_t page_size = narrow<size_t>(sysconf(_SC_PAGESIZE));
     const FileOffsetType offset_to_page = offset % static_cast<FileOffsetType>(page_size);
-    const size_t mapped_length = length + offset_to_page;
+    const size_t mapped_length = length + static_cast<size_t>(offset_to_page);
     const FileOffsetType mapped_offset = offset - offset_to_page;
-    void* const mapped_base = mmap(
-        nullptr, mapped_length,
-        PROT_READ | PROT_WRITE, MAP_PRIVATE,
-        file_descriptor.Get(), mapped_offset);
+    void* const mapped_base =
+        mmap(nullptr, mapped_length, PROT_READ | PROT_WRITE, MAP_PRIVATE, file_descriptor.Get(), mapped_offset);
 
     if (mapped_base == MAP_FAILED) {
       return ReportSystemError("mmap", file_path);
     }
 
-    mapped_memory = MappedMemoryPtr{
-        reinterpret_cast<char*>(mapped_base) + offset_to_page,
-        OrtCallbackInvoker{OrtCallback{UnmapFile, new UnmapFileParam{mapped_base, mapped_length}}}};
+    mapped_memory =
+        MappedMemoryPtr{reinterpret_cast<char*>(mapped_base) + offset_to_page,
+                        OrtCallbackInvoker{OrtCallback{UnmapFile, new UnmapFileParam{mapped_base, mapped_length}}}};
 
     return Status::OK();
   }
 
   static common::Status ReportSystemError(const char* operation_name, const std::string& path) {
-    auto e = errno;
-    char buf[1024];
-    const char* msg = "";
-    if (e > 0) {
-#if defined(__GLIBC__) && defined(_GNU_SOURCE) && !defined(__ANDROID__)
-      msg = strerror_r(e, buf, sizeof(buf));
-#else
-      // for Mac OS X and Android lower than API 23
-      if (strerror_r(e, buf, sizeof(buf)) != 0) {
-        buf[0] = '\0';
-      }
-      msg = buf;
-#endif
-    }
+    auto [err_no, err_msg] = GetSystemError();
     std::ostringstream oss;
-    oss << operation_name << " file \"" << path << "\" failed: " << msg;
-    return common::Status(common::SYSTEM, e, oss.str());
+    oss << operation_name << " file \"" << path << "\" failed: " << err_msg;
+    return common::Status(common::SYSTEM, err_no, oss.str());
+  }
+
+  bool FolderExists(const std::string& path) const override {
+    struct stat sb;
+    if (stat(path.c_str(), &sb)) {
+      return false;
+    }
+    return S_ISDIR(sb.st_mode);
+  }
+
+  common::Status CreateFolder(const std::string& path) const override {
+    size_t pos = 0;
+    do {
+      pos = path.find_first_of("\\/", pos + 1);
+      std::string directory = path.substr(0, pos);
+      if (FolderExists(directory.c_str())) {
+        continue;
+      }
+      if (mkdir(directory.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH)) {
+        return common::Status(common::SYSTEM, errno);
+      }
+    } while (pos != std::string::npos);
+    return Status::OK();
+  }
+
+  common::Status DeleteFolder(const PathString& path) const override {
+    const auto result = nftw(
+        path.c_str(), &nftw_remove, 32, FTW_DEPTH | FTW_PHYS);
+    ORT_RETURN_IF_NOT(result == 0, "DeleteFolder(): nftw() failed with error: ", result);
+    return Status::OK();
   }
 
   common::Status FileOpenRd(const std::string& path, /*out*/ int& fd) const override {
@@ -266,10 +537,21 @@ class PosixEnv : public Env {
     return Status::OK();
   }
 
-  common::Status LoadDynamicLibrary(const std::string& library_filename, void** handle) const override {
-    char* error_str = dlerror();  // clear any old error_str
-    *handle = dlopen(library_filename.c_str(), RTLD_NOW | RTLD_LOCAL);
-    error_str = dlerror();
+  common::Status GetCanonicalPath(
+      const PathString& path,
+      PathString& canonical_path) const override {
+    MallocdStringPtr canonical_path_cstr{realpath(path.c_str(), nullptr), Freer<char>()};
+    if (!canonical_path_cstr) {
+      return ReportSystemError("realpath", path);
+    }
+    canonical_path.assign(canonical_path_cstr.get());
+    return Status::OK();
+  }
+
+  common::Status LoadDynamicLibrary(const PathString& library_filename, bool global_symbols, void** handle) const override {
+    dlerror();  // clear any old error_str
+    *handle = dlopen(library_filename.c_str(), RTLD_NOW | (global_symbols ? RTLD_GLOBAL : RTLD_LOCAL));
+    char* error_str = dlerror();
     if (!*handle) {
       return common::Status(common::ONNXRUNTIME, common::FAIL,
                             "Failed to load library " + library_filename + " with error: " + error_str);
@@ -281,9 +563,9 @@ class PosixEnv : public Env {
     if (!handle) {
       return common::Status(common::ONNXRUNTIME, common::FAIL, "Got null library handle");
     }
-    char* error_str = dlerror();  // clear any old error_str
+    dlerror();  // clear any old error_str
     int retval = dlclose(handle);
-    error_str = dlerror();
+    char* error_str = dlerror();
     if (retval != 0) {
       return common::Status(common::ONNXRUNTIME, common::FAIL,
                             "Failed to unload library with error: " + std::string(error_str));
@@ -292,9 +574,14 @@ class PosixEnv : public Env {
   }
 
   common::Status GetSymbolFromLibrary(void* handle, const std::string& symbol_name, void** symbol) const override {
-    char* error_str = dlerror();  // clear any old error str
+    dlerror();  // clear any old error str
+
+    // search global space if handle is nullptr.
+    // value of RTLD_DEFAULT differs across posix platforms (-2 on macos, 0 on linux).
+    handle = handle ? handle : RTLD_DEFAULT;
     *symbol = dlsym(handle, symbol_name.c_str());
-    error_str = dlerror();
+
+    char* error_str = dlerror();
     if (error_str) {
       return common::Status(common::ONNXRUNTIME, common::FAIL,
                             "Failed to get symbol " + symbol_name + " with error: " + error_str);
@@ -325,18 +612,24 @@ class PosixEnv : public Env {
   }
 
  private:
-  PosixEnv() = default;
   Telemetry telemetry_provider_;
+#ifdef ORT_USE_CPUINFO
+  PosixEnv() {
+    cpuinfo_available_ = cpuinfo_initialize();
+    if (!cpuinfo_available_) {
+      LOGS_DEFAULT(INFO) << "cpuinfo_initialize failed";
+    }
+  }
+  bool cpuinfo_available_{false};
+#endif  // ORT_USE_CPUINFO
 };
 
 }  // namespace
 
-#if defined(PLATFORM_POSIX) || defined(__ANDROID__)
 // REGISTER_FILE_SYSTEM("", PosixFileSystem);
 // REGISTER_FILE_SYSTEM("file", LocalPosixFileSystem);
-const Env& Env::Default() {
+Env& Env::Default() {
   return PosixEnv::Instance();
 }
-#endif
 
 }  // namespace onnxruntime

@@ -10,7 +10,6 @@ namespace cuda {
 
 template <typename T>
 class LSTM final : public CudnnRnnBase<T> {
-
  public:
   LSTM(const OpKernelInfo& info) : CudnnRnnBase<T>(info) {
     CudnnRnnBase<T>::SetRNNMode(CUDNN_LSTM);
@@ -22,7 +21,7 @@ class LSTM final : public CudnnRnnBase<T> {
     // ONNX B layout is Wb[iofc], Rb[iofc], mapping to RNNLinLayerMatrixParams
     // the linLayerID is 0, 3, 1, 2, 4, 7, 5, 6, we can reuse it from W_lin_layer_id & R_lin_layer_id
 
-    CudnnRnnBase<T>::CacheCudnnRnnWeights(info);
+    ORT_THROW_IF_ERROR(CudnnRnnBase<T>::CacheCudnnRnnWeights(info));
   }
 };
 

@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 #include "cudnn_common.h"
-#include "gsl/gsl"
+#include "core/common/inlined_containers.h"
+#include "core/common/gsl.h"
 #include "shared_inc/cuda_call.h"
 #include "core/providers/cpu/tensor/utils.h"
 
@@ -26,13 +27,13 @@ Status CudnnTensor::CreateTensorIfNeeded() {
   return Status::OK();
 }
 
-Status CudnnTensor::Set(const std::vector<int64_t>& input_dims, cudnnDataType_t dataType) {
+Status CudnnTensor::Set(gsl::span<const int64_t> input_dims, cudnnDataType_t dataType) {
   ORT_RETURN_IF_ERROR(CreateTensorIfNeeded());
 
   int rank = gsl::narrow_cast<int>(input_dims.size());
   TensorPitches pitches(input_dims);
-  std::vector<int> dims(rank);
-  std::vector<int> strides(rank);
+  InlinedVector<int, kTensorShapeSmallBufferElementsSize> dims(rank);
+  InlinedVector<int, kTensorShapeSmallBufferElementsSize> strides(rank);
   for (int i = 0; i < rank; i++) {
     dims[i] = gsl::narrow_cast<int>(input_dims[i]);
     strides[i] = gsl::narrow_cast<int>(pitches[i]);
@@ -41,22 +42,16 @@ Status CudnnTensor::Set(const std::vector<int64_t>& input_dims, cudnnDataType_t 
   return Status::OK();
 }
 
+Status CudnnTensor::Set(cudnnTensorFormat_t format, cudnnDataType_t dataType, int n, int c, int h, int w) {
+  ORT_RETURN_IF_ERROR(CreateTensorIfNeeded());
+  CUDNN_RETURN_IF_ERROR(cudnnSetTensor4dDescriptor(tensor_, format, dataType, n, c, h, w));
+  return Status::OK();
+}
+
 Status CudnnTensor::Set(const CudnnTensor& x_desc, cudnnBatchNormMode_t mode) {
   ORT_RETURN_IF_ERROR(CreateTensorIfNeeded());
   CUDNN_RETURN_IF_ERROR(cudnnDeriveBNTensorDescriptor(tensor_, x_desc, mode));
   return Status::OK();
-}
-
-template <typename ElemType>
-cudnnDataType_t CudnnTensor::GetDataType() {
-  if (typeid(ElemType) == typeid(float))
-    return CUDNN_DATA_FLOAT;
-  else if (typeid(ElemType) == typeid(double))
-    return CUDNN_DATA_DOUBLE;
-  else if (typeid(ElemType) == typeid(half))
-    return CUDNN_DATA_HALF;
-  else
-    ORT_THROW("cuDNN engine currently supports only single/double/half precision data types.");
 }
 
 CudnnDataTensor::CudnnDataTensor()
@@ -106,12 +101,12 @@ CudnnFilterDescriptor::~CudnnFilterDescriptor() {
   }
 }
 
-Status CudnnFilterDescriptor::Set(const std::vector<int64_t>& filter_dims, cudnnDataType_t data_type) {
+Status CudnnFilterDescriptor::Set(gsl::span<const int64_t> filter_dims, cudnnDataType_t data_type) {
   if (!desc_)
     CUDNN_RETURN_IF_ERROR(cudnnCreateFilterDescriptor(&desc_));
 
   int rank = gsl::narrow_cast<int>(filter_dims.size());
-  std::vector<int> w_dims(rank);
+  InlinedVector<int> w_dims(rank);
   for (int i = 0; i < rank; i++) {
     w_dims[i] = gsl::narrow_cast<int>(filter_dims[i]);
   }
@@ -124,9 +119,52 @@ Status CudnnFilterDescriptor::Set(const std::vector<int64_t>& filter_dims, cudnn
   return Status::OK();
 }
 
-template cudnnDataType_t CudnnTensor::GetDataType<float>();
-template cudnnDataType_t CudnnTensor::GetDataType<double>();
-template cudnnDataType_t CudnnTensor::GetDataType<half>();
+Status CudnnFilterDescriptor::Set(cudnnTensorFormat_t format, cudnnDataType_t dataType, int k, int c, int h, int w) {
+  if (!desc_)
+    CUDNN_RETURN_IF_ERROR(cudnnCreateFilterDescriptor(&desc_));
+
+  CUDNN_RETURN_IF_ERROR(cudnnSetFilter4dDescriptor(desc_, dataType, format, k, c, h, w));
+  return Status::OK();
+}
+
+template <typename ElemType>
+cudnnDataType_t CudnnTensor::GetDataType() {
+  ORT_THROW("cuDNN engine currently supports only single/double/half/int8/uint8 precision data types. Got:",
+            typeid(ElemType).name());
+  // Not reachable but GCC complains
+  return CUDNN_DATA_FLOAT;
+}
+
+template <>
+cudnnDataType_t CudnnTensor::GetDataType<float>() {
+  return CUDNN_DATA_FLOAT;
+}
+
+template <>
+cudnnDataType_t CudnnTensor::GetDataType<double>() {
+  return CUDNN_DATA_DOUBLE;
+}
+
+template <>
+cudnnDataType_t CudnnTensor::GetDataType<half>() {
+  return CUDNN_DATA_HALF;
+}
+
+template <>
+cudnnDataType_t CudnnTensor::GetDataType<BFloat16>() {
+  ORT_THROW("cuDNN doesn't support BFloat16.");
+  return CUDNN_DATA_FLOAT;
+}
+
+template <>
+cudnnDataType_t CudnnTensor::GetDataType<int8_t>() {
+  return CUDNN_DATA_INT8;
+}
+
+template <>
+cudnnDataType_t CudnnTensor::GetDataType<uint8_t>() {
+  return CUDNN_DATA_UINT8;
+}
 
 template <>
 const float Consts<float>::One = 1;
@@ -144,8 +182,36 @@ const float Consts<half>::Zero = 0;
 
 const float Consts<half>::One = 1;
 
-std::vector<cudaDeviceProp> DeviceProp::s_cachedDeviceProps;
-std::once_flag DeviceProp::s_cachedDevicePropsInitFlag;
+const float Consts<BFloat16>::Zero = 0;
+const float Consts<BFloat16>::One = 1;
+
+template <>
+const int8_t Consts<int8_t>::Zero = 0;
+
+template <>
+const int8_t Consts<int8_t>::One = 1;
+
+template <>
+const uint8_t Consts<uint8_t>::Zero = 0;
+
+template <>
+const uint8_t Consts<uint8_t>::One = 1;
+
+#if !defined(DISABLE_FLOAT8_TYPES)
+
+template <>
+const Float8E4M3FN Consts<Float8E4M3FN>::Zero = Float8E4M3FN(0.0f, true);
+
+template <>
+const Float8E4M3FN Consts<Float8E4M3FN>::One = Float8E4M3FN(1.0f, true);
+
+template <>
+const Float8E5M2 Consts<Float8E5M2>::Zero = Float8E5M2(0.0f, true);
+
+template <>
+const Float8E5M2 Consts<Float8E5M2>::One = Float8E5M2(1.0f, true);
+
+#endif
 
 }  // namespace cuda
 }  // namespace onnxruntime

@@ -2,8 +2,10 @@
 // Licensed under the MIT License.
 
 #include "gtest/gtest.h"
-#include "test/common/tensor_op_test_utils.h"
 #include "contrib_ops/cpu/crop.h"
+#include "test/common/tensor_op_test_utils.h"
+#include "test/providers/provider_test_utils.h"
+#include "test/util/include/default_providers.h"
 
 using namespace ONNX_NAMESPACE;
 using namespace onnxruntime::test;
@@ -13,7 +15,7 @@ namespace test {
 using ExpectResult = OpTester::ExpectResult;
 
 TEST(CropContribOpTest, CropBorderOnly) {
-  const int N = 2, C = 1, H = 3, W = 4;
+  constexpr int N = 2, C = 1, H = 3, W = 4;
   std::vector<float> X = {1.0f, 2.0f, 3.0f, 4.0f,
                           2.0f, 3.0f, 4.0f, 5.0f,
                           3.0f, 4.0f, 5.0f, 6.0f,
@@ -36,7 +38,7 @@ TEST(CropContribOpTest, CropBorderOnly) {
 }
 
 TEST(CropContribOpTest, CropBorderAndScale) {
-  const int N = 2, C = 1, H = 3, W = 4;
+  constexpr int N = 2, C = 1, H = 3, W = 4;
   std::vector<float> X = {1.0f, 2.0f, 3.0f, 4.0f,
                           2.0f, 3.0f, 4.0f, 5.0f,
                           3.0f, 4.0f, 5.0f, 6.0f,
@@ -64,7 +66,12 @@ TEST(CropContribOpTest, CropBorderAndScale) {
 }
 
 TEST(ImageScalerContribOpTest, ImageScalerTest) {
-  const int64_t N = 1, C = 2, H = 2, W = 2;
+  // Won't fix for DML which only accepts 1 or 3 channels, as the op was only experimental and since removed.
+  if (DefaultDmlExecutionProvider().get() != nullptr) {
+    GTEST_SKIP() << "Skipping because of the following error: AbiCustomRegistry.cpp(507): The parameter is incorrect.";
+  }
+
+  constexpr int64_t N = 1, C = 2, H = 2, W = 2;
   std::vector<float> X = {
       1.0f, 3.0f,
       3.0f, 5.0f,
@@ -91,9 +98,9 @@ TEST(ImageScalerContribOpTest, ImageScalerTest) {
 }
 
 void MeanVarianceNormalizationAcrossChannels(bool across_channels, bool normalize_variance) {
-  const int64_t N = 2, C = 2, H = 2, W = 3;
-  int64_t one = 1;
-  int64_t zero = 0;
+  constexpr int64_t N = 2, C = 2, H = 2, W = 3;
+  constexpr int64_t one = 1;
+  constexpr int64_t zero = 0;
 
   std::vector<float> X = {3.0f, -3.0f, -1.0f,
                           1.0f, 2.0f, -1.0f,
@@ -113,13 +120,13 @@ void MeanVarianceNormalizationAcrossChannels(bool across_channels, bool normaliz
   test.AddAttribute("normalize_variance", normalize_variance ? one : zero);
   test.AddInput<float>("input", {N, C, H, W}, X);
   test.AddOutput<float>("output", {N, C, H, W}, result);
-  test.Run();
+  test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kOpenVINOExecutionProvider, kTensorrtExecutionProvider});  // OpenVINO doesn't support MVN operator below opset 9. TensorRT doesn't support opset 8 of MVN operator.
 }
 
 void MeanVarianceNormalizationPerChannel(bool across_channels, bool normalize_variance) {
-  const int64_t N = 2, C = 2, H = 2, W = 3;
-  int64_t one = 1;
-  int64_t zero = 0;
+  constexpr int64_t N = 2, C = 2, H = 2, W = 3;
+  constexpr int64_t one = 1;
+  constexpr int64_t zero = 0;
 
   std::vector<float> N1C1 = {3.0f, -3.0f, -1.0f,
                              1.0f, 2.0f, -1.0f};
@@ -180,7 +187,7 @@ void MeanVarianceNormalizationPerChannel(bool across_channels, bool normalize_va
   test.AddAttribute("normalize_variance", normalize_variance ? one : zero);
   test.AddInput<float>("input", {N, C, H, W}, X);
   test.AddOutput<float>("output", {N, C, H, W}, result);
-  test.Run();
+  test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kOpenVINOExecutionProvider, kTensorrtExecutionProvider});  // OpenVINO doesn't support MVN operator below opset 9. TensorRT doesn't support opset 8 of MVN operator.
 }
 
 TEST(MVNContribOpTest, MeanVarianceNormalizationCPUTest_Version1_TO_8) {

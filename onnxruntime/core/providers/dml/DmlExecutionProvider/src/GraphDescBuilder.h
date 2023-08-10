@@ -9,14 +9,14 @@ namespace Dml
 {
     struct GraphNodeProperties
     {
-        std::shared_ptr<const winrt::Windows::AI::MachineLearning::implementation::InternalRegistrationInfo> 
+        std::shared_ptr<const Windows::AI::MachineLearning::Adapter::InternalRegistrationInfo> 
             internalRegInfo;
 
         // These are currently passed from the partitioning step since the only DML operators current 
         // supporting graph nodes don't customize the order of edges or shapes, other than coercing
         // dimension count.  This will change as the supported set of operators as graph nodes increases.
-        winrt::Windows::AI::MachineLearning::implementation::EdgeShapes inputShapes;
-        winrt::Windows::AI::MachineLearning::implementation::EdgeShapes outputShapes;
+        Windows::AI::MachineLearning::Adapter::EdgeShapes inputShapes;
+        Windows::AI::MachineLearning::Adapter::EdgeShapes outputShapes;
     };
 
     namespace GraphDescBuilder
@@ -28,24 +28,24 @@ namespace Dml
         struct NodeInfo
         {
             Microsoft::WRL::ComPtr<IDMLOperator> op;
+            std::string name;
         };
 
         struct GraphDesc
         {
             std::vector<NodeInfo> nodes;
-            std::vector<DML_PREVIEW_INPUT_GRAPH_EDGE> inputEdges;
-            std::vector<DML_PREVIEW_OUTPUT_GRAPH_EDGE> outputEdges;
-            std::vector<DML_PREVIEW_INTERMEDIATE_GRAPH_EDGE> intermediateEdges;
+            std::vector<DML_INPUT_GRAPH_EDGE_DESC> inputEdges;
+            std::vector<DML_OUTPUT_GRAPH_EDGE_DESC> outputEdges;
+            std::vector<DML_INTERMEDIATE_GRAPH_EDGE_DESC> intermediateEdges;
             bool reuseCommandList;
         };
 
         GraphDesc BuildGraphDesc(
-            const onnxruntime::OpKernelInfo& kernelInfo,
-            gsl::span<const uint8_t> isConstGpuGraphInput,
-            std::unordered_map<std::string, onnx::TensorProto>& transferredInitializerMap,
+            const uint8_t* isConstGpuGraphInput,
+            const size_t isConstGpuGraphInputCount,
+            const std::unordered_map<std::string, std::pair<const ONNX_NAMESPACE::TensorProto*, bool>>& isInitializerTransferable,
             const onnxruntime::Graph& graph,
-            const onnxruntime::ConstPointerContainer<std::vector<onnxruntime::NodeArg*>>& fusedNodeInputDefs,
-            const onnxruntime::ConstPointerContainer<std::vector<onnxruntime::NodeArg*>>& fusedNodeOutputDefs,
+            const onnxruntime::IndexedSubGraph& indexedSubGraph,
             const std::unordered_map<std::string, GraphNodeProperties>& graphNodePropertyMap,
             IDMLDevice* device,
             const void* executionHandle);

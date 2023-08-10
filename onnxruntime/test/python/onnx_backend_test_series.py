@@ -2,195 +2,203 @@
 # Licensed under the MIT License.
 
 import argparse
-import sys
+import collections
+import json
 import os
 import platform
+import re
+import sys
 import unittest
-import onnx
-import onnx.backend.test
+from typing import Dict
 
 import numpy as np
-import onnxruntime.backend as c2
+import onnx
+import onnx.backend.test.case.test_case
+import onnx.backend.test.runner
+import onnx.defs
 
-pytest_plugins = 'onnx.backend.test.report',
+import onnxruntime.backend as backend  # pylint: disable=consider-using-from-import
 
-class OrtBackendTest(onnx.backend.test.BackendTest):
+pytest_plugins = ("onnx.backend.test.report",)
 
-    def __init__(self, backend, parent_module=None):
-        super(OrtBackendTest, self).__init__(backend, parent_module)
+
+class OrtBackendTest(onnx.backend.test.runner.Runner):
+    """ONNX test runner with ORT-specific behavior."""
+
+    # pylint: disable=too-few-public-methods
+    def __init__(
+        self,
+        rtol_overrides: Dict[str, float],
+        atol_overrides: Dict[str, float],
+    ):
+        self._rtol_overrides = rtol_overrides
+        self._atol_overrides = atol_overrides
+
+        super().__init__(backend, parent_module=__name__)
 
     @classmethod
     def assert_similar_outputs(cls, ref_outputs, outputs, rtol, atol):
-        np.testing.assert_equal(len(ref_outputs), len(outputs))
-        for i in range(len(outputs)):
-            np.testing.assert_equal(ref_outputs[i].dtype, outputs[i].dtype)
-            if ref_outputs[i].dtype == np.object:
-                np.testing.assert_array_equal(ref_outputs[i], outputs[i])
+        """Asserts ref_outputs and outputs match to within the given tolerances."""
+
+        def assert_similar_array(ref_output, output):
+            np.testing.assert_equal(ref_output.dtype, output.dtype)
+            if ref_output.dtype == object:
+                np.testing.assert_array_equal(ref_output, output)
             else:
-                np.testing.assert_allclose(
-                    ref_outputs[i],
-                    outputs[i],
-                    rtol=1e-3,
-                    atol=1e-5)
+                np.testing.assert_allclose(ref_output, output, rtol=rtol, atol=atol)
+
+        np.testing.assert_equal(len(ref_outputs), len(outputs))
+        for i in range(len(outputs)):  # pylint: disable=consider-using-enumerate
+            if isinstance(outputs[i], list):
+                for j in range(len(outputs[i])):
+                    assert_similar_array(ref_outputs[i][j], outputs[i][j])
+            else:
+                assert_similar_array(ref_outputs[i], outputs[i])
+
+    def _add_model_test(self, model_test: onnx.backend.test.case.test_case.TestCase, kind: str) -> None:
+        attrs = {}
+        # TestCase changed from a namedtuple to a dataclass in ONNX 1.12.
+        # We can just modify t_c.rtol and atol directly once ONNX 1.11 is no longer supported.
+        if hasattr(model_test, "_asdict"):
+            attrs = model_test._asdict()
+        else:
+            attrs = vars(model_test)
+        attrs["rtol"] = self._rtol_overrides[model_test.name]
+        attrs["atol"] = self._atol_overrides[model_test.name]
+
+        super()._add_model_test(onnx.backend.test.case.test_case.TestCase(**attrs), kind)
 
 
-# ORT first supported opset 7, so models with nodes that require versions prior to opset 7 are not supported
-def tests_with_pre_opset7_dependencies_filters():
-    filters = ['^test_AvgPool1d_cpu',
-               '^test_AvgPool1d_stride_cpu',
-               '^test_AvgPool2d_cpu',
-               '^test_AvgPool2d_stride_cpu',
-               '^test_AvgPool3d_cpu',
-               '^test_AvgPool3d_stride1_pad0_gpu_input_cpu',
-               '^test_AvgPool3d_stride_cpu',
-               '^test_BatchNorm1d_3d_input_eval_cpu',
-               '^test_BatchNorm2d_eval_cpu',
-               '^test_BatchNorm2d_momentum_eval_cpu',
-               '^test_BatchNorm3d_eval_cpu',
-               '^test_BatchNorm3d_momentum_eval_cpu',
-               '^test_GLU_cpu',
-               '^test_GLU_dim_cpu',
-               '^test_Linear_cpu',
-               '^test_PReLU_1d_cpu',
-               '^test_PReLU_1d_multiparam_cpu',
-               '^test_PReLU_2d_cpu',
-               '^test_PReLU_2d_multiparam_cpu',
-               '^test_PReLU_3d_cpu',
-               '^test_PReLU_3d_multiparam_cpu',
-               '^test_PoissonNLLLLoss_no_reduce_cpu',
-               '^test_Softsign_cpu',
-               '^test_operator_add_broadcast_cpu',
-               '^test_operator_add_size1_broadcast_cpu',
-               '^test_operator_add_size1_right_broadcast_cpu',
-               '^test_operator_add_size1_singleton_broadcast_cpu',
-               '^test_operator_addconstant_cpu',
-               '^test_operator_addmm_cpu',
-               '^test_operator_basic_cpu',
-               '^test_operator_mm_cpu',
-               '^test_operator_non_float_params_cpu',
-               '^test_operator_params_cpu',
-               '^test_operator_pow_cpu']
-
-    return filters
+def apply_filters(filters, category):
+    opset_version = f"opset{onnx.defs.onnx_opset_version()}"
+    validated_filters = []
+    for f in filters[category]:
+        if type(f) is list:
+            opset_regex = f[0]
+            filter_regex = f[1]
+            opset_match = re.match(opset_regex, opset_version)
+            if opset_match is not None:
+                validated_filters.append(filter_regex)
+        else:
+            validated_filters.append(f)
+    return validated_filters
 
 
-def unsupported_usages_filters():
-    filters = ['^test_convtranspose_1d_cpu',  # ConvTransponse supports 4-D only
-               '^test_convtranspose_3d_cpu']
+def load_jsonc(basename: str):
+    """Returns a deserialized object from the JSONC file in testdata/<basename>."""
+    filename = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)),
+        "testdata",
+        basename,
+    )
+    if not os.path.exists(filename):
+        raise FileNotFoundError(f"File not found {filename!r}.")
 
-    return filters
-
-
-def other_tests_failing_permanently_filters():
-    # Numpy float to string has unexpected rounding for some results given numpy default precision is meant to be 8.
-    # e.g. 0.296140194 -> '0.2961402' not '0.29614019'. ORT produces the latter with precision set to 8, which
-    # doesn't match the expected output that was generated with numpy.
-    filters = ['^test_cast_FLOAT_to_STRING_cpu']
-
-    return filters
-
-
-
-def test_with_types_disabled_due_to_binary_size_concerns_filters():
-    filters = ['^test_bitshift_right_uint16_cpu',
-               '^test_bitshift_left_uint16_cpu']
-
-    return filters
+    with open(filename, encoding="utf-8") as f:  # pylint: disable=invalid-name
+        lines = f.readlines()
+    lines = [x.split("//")[0] for x in lines]
+    return json.loads("\n".join(lines))
 
 
-def create_backend_test(testname=None):
-    backend_test = OrtBackendTest(c2, __name__)
+def create_backend_test(test_name=None):
+    """Creates an OrtBackendTest and adds its TestCase's to global scope so unittest will find them."""
+
+    overrides = load_jsonc("onnx_backend_test_series_overrides.jsonc")
+    rtol_default = overrides["rtol_default"]
+    atol_default = overrides["atol_default"]
+    rtol_overrides = collections.defaultdict(lambda: rtol_default)
+    rtol_overrides.update(overrides["rtol_overrides"])
+    atol_overrides = collections.defaultdict(lambda: atol_default)
+    atol_overrides.update(overrides["atol_overrides"])
+
+    backend_test = OrtBackendTest(rtol_overrides, atol_overrides)
 
     # Type not supported
-    backend_test.exclude(r'(FLOAT16)')
+    backend_test.exclude(r"(FLOAT16)")
 
-    if testname:
-        backend_test.include(testname + '.*')
+    if test_name:
+        backend_test.include(test_name + ".*")
     else:
-        # Tests that are failing temporarily and should be fixed
-        current_failing_tests = [#'^test_cast_STRING_to_FLOAT_cpu',  # old test data that is bad on Linux CI builds
-                                 '^test_unique_not_sorted_without_axis_cpu', # bad expected data. enable after https://github.com/onnx/onnx/pull/2381 is picked up
-                                 '^test_mod_float_mixed_sign_example_cpu', #onnxruntime::Mod::Compute fmod_ was false. fmod attribute must be true for float, float16 and double types
-                                 '^test_resize_downsample_scales_cubic_align_corners_cpu',  # results mismatch with onnx tests
-                                 '^test_resize_downsample_scales_linear_align_corners_cpu',  # results mismatch with onnx tests
-                                 '^test_resize_tf_crop_and_resize_cpu',  # bad expected data, needs test fix
-                                 '^test_resize_upsample_sizes_nearest_ceil_half_pixel_cpu',  # bad expected data, needs test fix
-                                 '^test_resize_upsample_sizes_nearest_floor_align_corners_cpu',  # bad expected data, needs test fix
-                                 '^test_resize_upsample_sizes_nearest_round_prefer_ceil_asymmetric_cpu',  # bad expected data, needs test fix
-                                 '^test_maxunpool_export_with_output_shape_cpu', # Invalid output in ONNX test. See https://github.com/onnx/onnx/issues/2398'
-                                ]
+        filters = load_jsonc("onnx_backend_test_series_filters.jsonc")
+        current_failing_tests = apply_filters(filters, "current_failing_tests")
 
-        # Example of how to disable tests for a specific provider.
-        # if c2.supports_device('NGRAPH'):
-        #    current_failing_tests.append('^test_operator_repeat_dim_overflow_cpu')
-        if c2.supports_device('NGRAPH'):
-            current_failing_tests += ['^test_clip.*',
-                                      '^test_qlinearconv_cpu',
-                                      '^test_depthtospace_crd.*',
-                                      '^test_argmax_negative_axis.*',
-                                      '^test_argmin_negative_axis.*',
-                                      '^test_hardmax_negative_axis.*',
-                                      '^test_gemm_default_no_bias_cpu',
-                                      '^test_flatten_negative_axis.*',
-                                      '^test_reduce_[a-z1-9_]*_negative_axes_.*',
-                                      'test_squeeze_negative_axes_cpu',
-                                      'test_unsqueeze_negative_axes_cpu',
-                                      'test_constant_pad_cpu',
-                                      'test_edge_pad_cpu',
-                                      'test_reflect_pad_cpu']
+        if platform.architecture()[0] == "32bit":
+            current_failing_tests += apply_filters(filters, "current_failing_tests_x86")
 
-        if c2.supports_device('DNNL'):
-            current_failing_tests += ['^test_range_float_type_positive_delta_expanded_cpu',
-                                      '^test_range_int32_type_negative_delta_expanded_cpu',
-									  '^test_averagepool_2d_ceil_cpu',
-                                      '^test_maxpool_2d_ceil_cpu',
-									  '^test_maxpool_2d_dilations_cpu']
+        if backend.supports_device("DNNL"):
+            current_failing_tests += apply_filters(filters, "current_failing_tests_DNNL")
 
-        if c2.supports_device('OPENVINO_GPU_FP32') or c2.supports_device('OPENVINO_GPU_FP16'):
-            current_failing_tests.append('^test_div_cpu*')
-            # temporarily exclude vgg19 test which comsumes too much memory, run out of memory on Upsquared device.
-            # single test pass for vgg19, need furture investigation
-            current_failing_tests.append('^test_vgg19_cpu*')
+        if backend.supports_device("NNAPI"):
+            current_failing_tests += apply_filters(filters, "current_failing_tests_NNAPI")
 
-        if c2.supports_device('OPENVINO_CPU_FP32'):
-            current_failing_tests += ['^test_scan9_sum_cpu',#sum_out output node not defined, temporarily disabling test
-                                      '^test_scan_sum_cpu'] #sum_out output node not defined, temporarily disabling test
+        if backend.supports_device("OPENVINO_GPU_FP32") or backend.supports_device("OPENVINO_GPU_FP16"):
+            current_failing_tests += apply_filters(filters, "current_failing_tests_OPENVINO_GPU")
 
-        filters = current_failing_tests + \
-                  tests_with_pre_opset7_dependencies_filters() + \
-                  unsupported_usages_filters() + \
-                  other_tests_failing_permanently_filters() + \
-                  test_with_types_disabled_due_to_binary_size_concerns_filters()
+        if backend.supports_device("OPENVINO_CPU_FP32"):
+            current_failing_tests += apply_filters(filters, "current_failing_tests_OPENVINO_CPU_FP32")
 
-        backend_test.exclude('(' + '|'.join(filters) + ')')
-        print('excluded tests:', filters)
+        if backend.supports_device("OPENVINO_CPU_FP16"):
+            current_failing_tests += apply_filters(filters, "current_failing_tests_OPENVINO_CPU_FP16")
+
+        if backend.supports_device("OPENVINO"):
+            current_failing_tests += apply_filters(filters, "current_failing_tests_OPENVINO_opset18")
+
+        if backend.supports_device("MIGRAPHX"):
+            current_failing_tests += apply_filters(filters, "current_failing_tests_MIGRAPHX")
+
+        # Skip these tests for a "pure" DML onnxruntime python wheel. We keep these tests enabled for instances where both DML and CUDA
+        # EPs are available (Windows GPU CI pipeline has this config) - these test will pass because CUDA has higher precedence than DML
+        # and the nodes are assigned to only the CUDA EP (which supports these tests)
+        if backend.supports_device("DML") and not backend.supports_device("GPU"):
+            current_failing_tests += apply_filters(filters, "current_failing_tests_pure_DML")
+
+        filters = (
+            current_failing_tests
+            + apply_filters(filters, "tests_with_pre_opset7_dependencies")
+            + apply_filters(filters, "unsupported_usages")
+            + apply_filters(filters, "failing_permanently")
+            + apply_filters(filters, "test_with_types_disabled_due_to_binary_size_concerns")
+        )
+
+        backend_test.exclude("(" + "|".join(filters) + ")")
+        print("excluded tests:", filters)
+
+        # exclude TRT EP temporarily and only test CUDA EP to retain previous behavior
+        os.environ["ORT_ONNX_BACKEND_EXCLUDE_PROVIDERS"] = "TensorrtExecutionProvider"
 
     # import all test cases at global scope to make
     # them visible to python.unittest.
     globals().update(backend_test.enable_report().test_cases)
 
-    return backend_test
-
 
 def parse_args():
-    parser = argparse.ArgumentParser(os.path.basename(__file__),
-                                     description='Run the ONNX backend tests using ONNXRuntime.')
+    """Returns args parsed from sys.argv."""
+    parser = argparse.ArgumentParser(
+        os.path.basename(__file__),
+        description="Run the ONNX backend tests using ONNXRuntime.",
+    )
 
     # Add an argument to match a single test name, by adding the name to the 'include' filter.
     # Using -k with python unittest (https://docs.python.org/3/library/unittest.html#command-line-options)
-    # doesn't work as it filters on the test method name (Runner._add_model_test) rather than inidividual test case names.
-    parser.add_argument('-t', '--test-name', dest='testname', type=str,
-                        help="Only run tests that match this value. Matching is regex based, and '.*' is automatically appended")
+    # doesn't work as it filters on the test method name (Runner._add_model_test) rather than individual
+    # test case names.
+    parser.add_argument(
+        "-t",
+        "--test-name",
+        dest="test_name",
+        type=str,
+        help="Only run tests that match this value. Matching is regex based, and '.*' is automatically appended",
+    )
 
     # parse just our args. python unittest has its own args and arg parsing, and that runs inside unittest.main()
-    args, left = parser.parse_known_args()
-    sys.argv = sys.argv[:1] + left
+    parsed, unknown = parser.parse_known_args()
+    sys.argv = sys.argv[:1] + unknown
 
-    return args
+    return parsed
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
 
-    backend_test = create_backend_test(args.testname)
+    create_backend_test(args.test_name)
     unittest.main()

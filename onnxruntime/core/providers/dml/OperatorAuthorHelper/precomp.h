@@ -7,6 +7,8 @@
 #include <cassert>
 #include <chrono>
 #include <vector>
+#include <map>
+#include <set>
 #include <numeric>
 
 #include <wrl/client.h>
@@ -15,4 +17,4 @@
 #include <wil/wrl.h>
 #include <wil/result.h>
 
-#include <gsl/gsl>
+#include "core/common/gsl.h"

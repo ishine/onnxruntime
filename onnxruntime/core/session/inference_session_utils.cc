@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+#if !defined(ORT_MINIMAL_BUILD)
+
 #include "core/session/inference_session_utils.h"
 
 namespace onnxruntime {
@@ -23,7 +25,7 @@ static Status SetIntraOpNumThreads(SessionOptions& session_options,
   }
 
   LOGS(logger, INFO) << "Setting intra_op_num_threads to " << value;
-  session_options.intra_op_num_threads = value;
+  session_options.intra_op_param.thread_pool_size = value;
   return Status::OK();
 }
 
@@ -36,7 +38,7 @@ static Status SetInterOpNumThreads(SessionOptions& session_options,
   }
 
   LOGS(logger, INFO) << "Setting inter_op_num_threads to " << value;
-  session_options.inter_op_num_threads = value;
+  session_options.inter_op_param.thread_pool_size = value;
   return Status::OK();
 }
 
@@ -101,6 +103,13 @@ static Status SetEnableProfiling(SessionOptions& session_options,
   return Status::OK();
 }
 
+// This function is called by nlohmann/json
+void from_json(const json& j, TuningResults& trs) {
+  j.at("ep").get_to(trs.ep);
+  j.at("results").get_to(trs.results);
+  j.at("validators").get_to(trs.validators);
+}
+
 //---------------------------------------------------
 //--- end of session options related helpers ---
 //---------------------------------------------------
@@ -109,7 +118,8 @@ static Status SetEnableProfiling(SessionOptions& session_options,
 //--- end of local helpers ---
 //---------------------
 
-Status InferenceSessionUtils::ParseOrtConfigJsonInModelProto(const ONNX_NAMESPACE::ModelProto& model_proto) {
+namespace inference_session_utils {
+Status JsonConfigParser::ParseOrtConfigJsonInModelProto(const ONNX_NAMESPACE::ModelProto& model_proto) {
   if (is_model_checked_for_ort_config_json_) {
     return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "The Model Proto has already been checked for the ORT config json.");
   }
@@ -119,22 +129,27 @@ Status InferenceSessionUtils::ParseOrtConfigJsonInModelProto(const ONNX_NAMESPAC
       LOGS(logger_, INFO)
           << "Found session/run/environment configuration in the model file to be used while running the model";
 
-      try {
+      auto status = Status::OK();
+      ORT_TRY {
         const auto& val = metadata_field.value();
         LOGS(logger_, INFO) << "ORT config json from the model: " << val;
 
         parsed_json_ = json::parse(val);
         // set the flag indicating that the model has the ORT config json.
         is_ort_config_json_available_ = true;
-      } catch (const std::exception& e) {
-        std::ostringstream message_stream;
-        message_stream << "Json stored in the `ort_config` key cannot be parsed. Error message: " << e.what();
-
-        std::string message = message_stream.str();
-
-        LOGS(logger_, ERROR) << message;
-        return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, message);
       }
+      ORT_CATCH(const std::exception& e) {
+        ORT_HANDLE_EXCEPTION([&]() {
+          std::ostringstream message_stream;
+          message_stream << "Json stored in the `ort_config` key cannot be parsed. Error message: " << e.what();
+
+          std::string message = message_stream.str();
+
+          LOGS(logger_, ERROR) << message;
+          status = ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, message);
+        });
+      }
+      ORT_RETURN_IF_ERROR(status);
 
       break;
     }
@@ -145,7 +160,7 @@ Status InferenceSessionUtils::ParseOrtConfigJsonInModelProto(const ONNX_NAMESPAC
   return Status::OK();
 }
 
-Status InferenceSessionUtils::ParseSessionOptionsFromModelProto(SessionOptions& session_options) {
+Status JsonConfigParser::ParseSessionOptionsFromModelProto(SessionOptions& session_options) {
   if (!is_model_checked_for_ort_config_json_) {
     return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "The Model Proto hasn't been checked for the ORT config json.");
   }
@@ -214,9 +229,42 @@ Status InferenceSessionUtils::ParseSessionOptionsFromModelProto(SessionOptions& 
   return Status::OK();
 }
 
-Status InferenceSessionUtils::ParseRunOptionsFromModelProto(RunOptions& /*run_options*/) {
+Status JsonConfigParser::ParseRunOptionsFromModelProto(RunOptions& /*run_options*/) {
   return ORT_MAKE_STATUS(ONNXRUNTIME, NOT_IMPLEMENTED,
                          "Parsing RunOptions from ModelProto is not supported yet");
 }
 
+Status ParseTuningResultsFromModelMetadata(const onnxruntime::ModelMetadata& metadata,
+                                           std::vector<TuningResults>& results,
+                                           bool& key_found) {
+  results.clear();
+  key_found = false;
+  auto it = metadata.custom_metadata_map.find(kTuningResultsKeys);
+  if (it == metadata.custom_metadata_map.end()) {
+    return Status::OK();
+  }
+
+  key_found = true;
+  LOGS_DEFAULT(INFO) << "Found tuning results in the model file to be used while loading the model";
+
+  Status status;
+  ORT_TRY {
+    auto parsed_tuning_results_json = json::parse(it->second);
+    results = parsed_tuning_results_json.get<std::vector<TuningResults>>();
+  }
+  ORT_CATCH(const std::exception& e) {
+    ORT_HANDLE_EXCEPTION([&]() {
+      status = ORT_MAKE_STATUS(
+          ONNXRUNTIME, FAIL,
+          "Tuning results stored in the model file cannot be parsed. Error message: ", e.what(), ". Ignoring...");
+    });
+    ORT_RETURN_IF_ERROR(status);
+  }
+
+  return Status::OK();
+}
+
+}  // namespace inference_session_utils
 }  // namespace onnxruntime
+
+#endif  // !defined(ORT_MINIMAL_BUILD)

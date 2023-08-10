@@ -4,13 +4,14 @@
 #include "core/optimizer/initializer.h"
 #include "core/optimizer/bias_gelu_fusion.h"
 #include "core/graph/graph_utils.h"
+#include "core/optimizer/utils.h"
 #include <deque>
 
 using namespace ONNX_NAMESPACE;
 using namespace ::onnxruntime::common;
 namespace onnxruntime {
 
-Status BiasGelu::ApplyImpl(Graph& graph, bool& modified, int graph_level, const logging::Logger& logger) const {
+Status BiasGeluFusion::ApplyImpl(Graph& graph, bool& modified, int graph_level, const logging::Logger& logger) const {
   GraphViewer graph_viewer(graph);
   const auto& node_topology_list = graph_viewer.GetNodesInTopologicalOrder();
 
@@ -23,13 +24,13 @@ Status BiasGelu::ApplyImpl(Graph& graph, bool& modified, int graph_level, const 
 
     ORT_RETURN_IF_ERROR(Recurse(node, modified, graph_level, logger));
 
-    if (!graph_utils::IsSupportedOptypeVersionAndDomain(node, "Add", {7}) ||
+    if (!graph_utils::IsSupportedOptypeVersionAndDomain(node, "Add", {7, 13, 14}) ||
         !graph_utils::IsSupportedProvider(node, GetCompatibleExecutionProviders()) ||
-        node.GetOutputEdgesCount() != 1) {
+        !optimizer_utils::CheckOutputEdges(graph, node, 1)) {
       continue;
     }
 
-    std::vector<NodeArg*> gelu_input;
+    InlinedVector<NodeArg*> gelu_input;
     const TensorShapeProto* input1_shape = node.MutableInputDefs()[0]->Shape();
     const TensorShapeProto* input2_shape = node.MutableInputDefs()[1]->Shape();
 
@@ -40,11 +41,7 @@ Status BiasGelu::ApplyImpl(Graph& graph, bool& modified, int graph_level, const 
       continue;
     }
 
-    int last_dim_shape1 = input1_shape->dim_size() - 1;
-    int last_dim_shape2 = input2_shape->dim_size() - 1;
-    if (!utils::HasDimValue(input1_shape->dim(last_dim_shape1)) ||
-        !utils::HasDimValue(input2_shape->dim(last_dim_shape2)) ||
-        input1_shape->dim(last_dim_shape1).dim_value() != input2_shape->dim(last_dim_shape2).dim_value()) {
+    if (input1_shape->dim(input1_shape->dim_size() - 1) != input2_shape->dim(input2_shape->dim_size() - 1)) {
       continue;
     }
 
@@ -64,20 +61,28 @@ Status BiasGelu::ApplyImpl(Graph& graph, bool& modified, int graph_level, const 
     }
 
     const Node& next_node = (*next_node_itr);
-    if (!graph_utils::IsSupportedOptypeVersionAndDomain(next_node, "Gelu", {1}, kMSDomain) ||
+    if (!(graph_utils::IsSupportedOptypeVersionAndDomain(next_node, "Gelu", {1}, kMSDomain) ||
+          graph_utils::IsSupportedOptypeVersionAndDomain(next_node, "FastGelu", {1}, kMSDomain)) ||
         next_node.GetExecutionProviderType() != node.GetExecutionProviderType()) {
       continue;
     }
 
-    if (!graph.GetNodeOutputsInGraphOutputs(node).empty()) {
+    bool is_fast_gelu = next_node.OpType().compare("FastGelu") == 0;
+    if (is_fast_gelu && next_node.InputDefs().size() > 1) {
+      continue;
+    }
+
+    if (graph.NodeProducesGraphOutput(node)) {
       continue;
     }
 
     Node& add_node = node;
     Node& gelu_node = const_cast<Node&>(next_node);
+    std::string op_type = "BiasGelu";
+    if (is_fast_gelu) op_type = "FastGelu";
 
-    Node& gelu_add_fusion_node = graph.AddNode(graph.GenerateNodeName("BiasGelu"),
-                                               "BiasGelu",
+    Node& gelu_add_fusion_node = graph.AddNode(graph.GenerateNodeName(op_type),
+                                               op_type,
                                                "fused Add and Gelu",
                                                gelu_input,
                                                {},
@@ -88,7 +93,7 @@ Status BiasGelu::ApplyImpl(Graph& graph, bool& modified, int graph_level, const 
     gelu_add_fusion_node.SetExecutionProviderType(gelu_node.GetExecutionProviderType());
 
     // move output definitions and edges from gelu_node to gelu_add_fusion_node
-    //delete add_node and gelu_node.
+    // delete add_node and gelu_node.
     graph_utils::FinalizeNodeFusion(graph, {add_node, gelu_node}, gelu_add_fusion_node);
 
     modified = true;

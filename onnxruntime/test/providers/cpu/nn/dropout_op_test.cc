@@ -3,6 +3,7 @@
 
 #include "gtest/gtest.h"
 #include "test/providers/provider_test_utils.h"
+#include "test/util/include/default_providers.h"
 
 namespace onnxruntime {
 namespace test {
@@ -29,11 +30,15 @@ TEST(Dropout, WithOptionalOutputOpset10) {
   test.AddInput<float>("X", dims, {1.0f, 2.0f, 3.0f, 5.0f});
   test.AddOutput<float>("Y", dims, {1.0f, 2.0f, 3.0f, 5.0f});
   test.AddOutput<bool>("mask", dims, {false, false, false, false});
-  // The NGraph execution provider doesn't seem to support 'Dropout' with optional mask output
-  test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kNGraphExecutionProvider});
+  test.Run();
 }
 
 TEST(Dropout, WithOptionalOutputOpset7) {
+  // TODO: Unskip when fixed #41968513
+  if (DefaultDmlExecutionProvider().get() != nullptr) {
+    GTEST_SKIP() << "Skipping because of the following error: MLOperatorAuthorImpl.cpp(2092): The parameter is incorrect.";
+  }
+
   // Opset 7 differs with Opset 10 in that the type of the 'mask'
   // output is tied with the type of the input in Opset 7 whereas
   // the type of 'mask' in Opset 10 is 'bool' always
@@ -42,9 +47,8 @@ TEST(Dropout, WithOptionalOutputOpset7) {
   test.AddInput<float>("X", dims, {1.0f, 2.0f, 3.0f, 5.0f});
   test.AddOutput<float>("Y", dims, {1.0f, 2.0f, 3.0f, 5.0f});
   test.AddOutput<float>("mask", dims, {0.0f, 0.0f, 0.0f, 0.0f});
-  // The NGraph execution provider doesn't seem to support 'Dropout' with optional mask output
   // The TensorRT execution provider doesn't seem to support 'Dropout' with non-boolean mask output
-  test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kNGraphExecutionProvider, kTensorrtExecutionProvider});
+  test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});
 }
 
 }  // namespace test

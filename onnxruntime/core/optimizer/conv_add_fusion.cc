@@ -23,7 +23,9 @@ Status ConvAddFusion::Apply(Graph& graph, Node& node, RewriteRuleEffect& modifie
   ORT_ENFORCE(add_B_tensor_proto);
 
   // Conv only supports floating point data types, so can only fuse with an initializer containing those types
-  if (!optimizer_utils::IsFloatingPointDataType(*add_B_tensor_proto) || conv_W_tensor_proto->dims_size() < 4) {
+  if (!optimizer_utils::IsFloatingPointDataType(*conv_W_tensor_proto) ||
+      conv_W_tensor_proto->data_type() != add_B_tensor_proto->data_type() ||
+      conv_W_tensor_proto->dims_size() <= 2) {
     return Status::OK();
   }
 
@@ -54,26 +56,25 @@ Status ConvAddFusion::Apply(Graph& graph, Node& node, RewriteRuleEffect& modifie
     const auto* conv_B_tensor_proto = graph_utils::GetConstantInitializer(graph, B_input_name);
     ORT_ENFORCE(conv_B_tensor_proto);
 
-    if (!optimizer_utils::IsFloatingPointDataType(*conv_B_tensor_proto) ||
-        conv_B_tensor_proto->data_type() != add_B_tensor_proto->data_type() ||
+    if (conv_B_tensor_proto->data_type() != add_B_tensor_proto->data_type() ||
         conv_B_tensor_proto->dims_size() != 1 ||
         conv_B_tensor_proto->dims(0) != conv_W_tensor_proto->dims(0)) {
       return Status::OK();
     }
 
-    auto conv_B = onnxruntime::make_unique<Initializer>(*conv_B_tensor_proto);
-    auto add_B = onnxruntime::make_unique<Initializer>(*add_B_tensor_proto);
+    Initializer conv_B{*conv_B_tensor_proto, graph.ModelPath()};
+    Initializer add_B{*add_B_tensor_proto, graph.ModelPath()};
 
-    if (conv_B->size() != add_B->size()) {
+    if (conv_B.size() != add_B.size()) {
       return Status::OK();
     }
 
     // Calculate new value of initializers of conv node
-    conv_B->add(*add_B);
+    conv_B.add(add_B);
 
     // Create new initializers of conv
     ONNX_NAMESPACE::TensorProto new_conv_B_tensor_proto;
-    conv_B->ToProto(new_conv_B_tensor_proto);
+    conv_B.ToProto(new_conv_B_tensor_proto);
 
     auto new_name = graph.GenerateNodeArgName("ConvAddFusion_B_" + B_input_name);
     new_conv_B_tensor_proto.set_name(new_name);
@@ -110,7 +111,7 @@ bool ConvAddFusion::SatisfyCondition(const Graph& graph, const Node& node, const
   }
 
   const auto& next_node = *node.OutputNodesBegin();
-  if (!graph_utils::IsSupportedOptypeVersionAndDomain(next_node, "Add", {7}) ||
+  if (!graph_utils::IsSupportedOptypeVersionAndDomain(next_node, "Add", {7, 13, 14}) ||
       next_node.GetInputEdgesCount() != 1 ||
       // Make sure the two nodes do not span execution providers.
       next_node.GetExecutionProviderType() != node.GetExecutionProviderType()) {
@@ -124,7 +125,7 @@ bool ConvAddFusion::SatisfyCondition(const Graph& graph, const Node& node, const
     return false;
   }
 
-  if (!graph.GetNodeOutputsInGraphOutputs(node).empty()) {
+  if (graph.NodeProducesGraphOutput(node)) {
     return false;
   }
 

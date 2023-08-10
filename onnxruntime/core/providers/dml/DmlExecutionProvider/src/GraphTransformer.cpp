@@ -9,25 +9,19 @@
 #include "GraphPartitioner.h"
 #include "core/providers/dml/OperatorAuthorHelper/Attributes.h"
 #include "core/providers/dml/OperatorAuthorHelper/OperatorHelper.h"
-#include "core/providers/dml/OperatorAuthorHelper/OperatorRegistration.h"
+#include "core/providers/dml/OperatorAuthorHelper/OperatorVersions.h"
+#include "core/framework/kernel_lookup.h"
 #include "core/framework/kernel_registry.h"
+#include "core/framework/kernel_type_str_resolver.h"
 #include "core/graph/graph_utils.h"
 
 namespace Dml
 {
-    GraphTransformer::GraphTransformer(
-        const std::string& name, 
-        const onnxruntime::IExecutionProvider* provider
-    )
-        : onnxruntime::GraphTransformer(name),
-          m_providerImpl(static_cast<const ExecutionProvider* >(provider)->GetImpl())
-    {
-    }
-
     onnxruntime::common::Status GraphTransformer::ApplyImpl(
         onnxruntime::Graph& graph,
         bool& modified,
-        int graph_level, const onnxruntime::logging::Logger&) const {
+        int graph_level, const onnxruntime::logging::Logger&) const
+    {
       modified = false;
 
       // Perform fusion
@@ -36,8 +30,9 @@ namespace Dml
         PerformOperatorFusion(&graph, &transformModifiedGraph);
         modified |= transformModifiedGraph;
 
-        if (modified) {
-          ORT_RETURN_IF_ERROR(graph.Resolve());
+        if (modified)
+        {
+            ORT_RETURN_IF_ERROR(graph.Resolve());
         }
       }
 
@@ -54,11 +49,9 @@ namespace Dml
         }
         return ss.str();
     }
-    
+
     void GraphTransformer::PerformOperatorFusion(onnxruntime::Graph* graph, bool* modified) const
     {
-        onnxruntime::KernelRegistry* registry = m_providerImpl->GetKernelRegistry().get();
-
         struct NodeToAdd
         {
             std::string name;
@@ -80,17 +73,8 @@ namespace Dml
 
         for (auto& node : graph->Nodes())
         {
-            // We need to predict whether the nodes will be assigned to the DML transformer by Lotus,
-            // which occurs in IExecutionProvider::GetCapability.
-
-            bool allow64BitInputThroughStrides = false;
-            if (!IsNodeSupportedByDml(
-                node,
-                *registry,
-                m_providerImpl->GetSuppportedDeviceDataTypeMask(),
-                *m_providerImpl->GetInternalRegistrationInfoMap().get(),
-                allow64BitInputThroughStrides,
-                nullptr))
+            // Ignore the nodes which were not assigned to the DML by ORT during IExecutionProvider::GetCapability()
+            if (!onnxruntime::graph_utils::IsSupportedProvider(node, {onnxruntime::kDmlExecutionProvider}))
             {
                 // Can't fuse nodes that don't belong to this execution provider
                 continue;
@@ -108,9 +92,8 @@ namespace Dml
 
             const auto& outputNode = *node.OutputNodesBegin();
 
-            // We need to predict whether the nodes will be assigned to the DML transformer by Lotus,
-            // which occurs in IExecutionProvider::GetCapability.
-            if (!registry->TryFindKernel(outputNode, onnxruntime::kDmlExecutionProvider))
+            // Can't fuse if outputNode was not assigned to the DML by ORT during IExecutionProvider::GetCapability()
+            if (!onnxruntime::graph_utils::IsSupportedProvider(outputNode, GetCompatibleExecutionProviders()))
             {
                 // Can't fuse nodes that don't belong to this execution provider
                 continue;
@@ -161,12 +144,14 @@ namespace Dml
             fusedNode.activationAttributes = activationNode.GetAttributes();
 
             // Inputs to the fused node are the inputs to the fuseable node
-            for (const auto *input : fuseableNode.InputDefs()) {
+            for (const auto *input : fuseableNode.InputDefs())
+            {
                 fusedNode.inputs.push_back(graph->GetNodeArg(input->Name()));
             }
 
             // Outputs from the fused node are the outputs to the activation node
-            for (const auto *output : activationNode.OutputDefs()){
+            for (const auto *output : activationNode.OutputDefs())
+            {
                 fusedNode.outputs.push_back(graph->GetNodeArg(output->Name()));
             }
 
@@ -179,7 +164,7 @@ namespace Dml
             bool nodesRemoved = false;
             nodesRemoved = graph->RemoveNode(fuseableNode.Index());
             nodesRemoved &= graph->RemoveNode(activationNode.Index());
-            THROW_HR_IF(E_UNEXPECTED, !nodesRemoved);
+            ORT_THROW_HR_IF(E_UNEXPECTED, !nodesRemoved);
 
             *modified = true;
         }
@@ -194,7 +179,8 @@ namespace Dml
                 nodeToAdd.outputs,
                 &nodeToAdd.attributes,
                 nodeToAdd.domain);
-
+            
+            node.SetExecutionProviderType(onnxruntime::kDmlExecutionProvider);
             // Add a dynamic attribute to the fuseable operator to specify activation
             node.AddAttribute(AttrName::FusedActivation, nodeToAdd.activationOpType);
             node.AddAttribute(AttrName::FusedActivationDomain, nodeToAdd.activationOpDomain);
@@ -206,7 +192,7 @@ namespace Dml
                 // Change the name of the attribute to its fused node version
                 std::string fusedAttributeName = Dml::FusionHelpers::GetFusedAttributeName(attribute.first);
                 attribute.second.set_name(fusedAttributeName);
-                node.AddAttribute(fusedAttributeName, attribute.second);
+                node.AddAttributeProto(attribute.second);
             }
         }
     }

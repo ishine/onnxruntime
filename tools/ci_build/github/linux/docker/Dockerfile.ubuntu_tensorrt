@@ -1,14 +1,22 @@
-# Tag: nvcr.io/nvidia/tensorrt:19.09-py3
-# Label: com.nvidia.cuda.version: 10.1.243
-# Label: com.nvidia.cudnn.version: 7.6.3
-# Ubuntu 18.04
-FROM nvcr.io/nvidia/tensorrt:19.09-py3
+# Tag: nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04
+# Label: com.nvidia.cuda.version: 11.8.0
+# Label: com.nvidia.cudnn.version: 8.7.0
+# Ubuntu 20.04
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04@sha256:b754c43fe9d62e88862d168c4ab9282618a376dbc54871467870366cacfa456e
 
-ARG PYTHON_VERSION=3.6
+ARG PYTHON_VERSION=3.8
+ARG DEBIAN_FRONTEND=noninteractive
 
 ADD scripts /tmp/scripts
-RUN /tmp/scripts/install_ubuntu.sh -p $PYTHON_VERSION && /tmp/scripts/install_deps.sh -p $PYTHON_VERSION && rm -rf /tmp/scripts \
-    && rm /usr/local/bin/cmake && rm /usr/local/bin/ctest && rm -r /usr/local/share/cmake-3.12
+RUN /tmp/scripts/install_ubuntu.sh -p $PYTHON_VERSION && /tmp/scripts/install_os_deps.sh && /tmp/scripts/install_python_deps.sh -p $PYTHON_VERSION && rm -rf /tmp/scripts
+
+# Install TensorRT
+RUN v="8.5.1-1+cuda11.8" &&\
+    apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/7fa2af80.pub &&\
+    apt-get update &&\
+    sudo apt-get install -y libnvinfer8=${v} libnvonnxparsers8=${v} libnvparsers8=${v} libnvinfer-plugin8=${v} \
+        libnvinfer-dev=${v} libnvonnxparsers-dev=${v} libnvparsers-dev=${v} libnvinfer-plugin-dev=${v} \
+        python3-libnvinfer=${v} libnvinfer-samples=${v}
 
 WORKDIR /root
 
@@ -21,10 +29,9 @@ RUN _CUDNN_VERSION=$(echo $CUDNN_VERSION | cut -d. -f1-2) && \
     ln -s /etc/alternatives/libcudnn_so /usr/local/cudnn-$_CUDNN_VERSION/cuda/lib64/libcudnn.so && \
     ln -s /usr/local/cudnn{-$_CUDNN_VERSION,}
 
-ENV LD_LIBRARY_PATH /usr/local/openblas/lib:$LD_LIBRARY_PATH
-
 ARG BUILD_USER=onnxruntimedev
 ARG BUILD_UID=1000
 WORKDIR /home/$BUILD_USER
 RUN adduser --gecos 'onnxruntime Build User' --disabled-password $BUILD_USER --uid $BUILD_UID
 USER $BUILD_USER
+ENV CUDA_MODULE_LOADING "LAZY"

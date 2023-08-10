@@ -1,13 +1,15 @@
-#-------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
-#--------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 """
 Implements ONNX's backend API.
 """
-import numpy as np
-from onnxruntime import RunOptions
+from typing import Any, Tuple  # noqa: F401
+
 from onnx.backend.base import BackendRep
+
+from onnxruntime import RunOptions
 
 
 class OnnxRuntimeBackendRep(BackendRep):
@@ -21,7 +23,6 @@ class OnnxRuntimeBackendRep(BackendRep):
         :param session: :class:`onnxruntime.InferenceSession`
         """
         self._session = session
-
 
     def run(self, inputs, **kwargs):  # type: (Any, **Any) -> Tuple[Any, ...]
         """
@@ -47,6 +48,6 @@ class OnnxRuntimeBackendRep(BackendRep):
         else:
             inp = self._session.get_inputs()
             if len(inp) != 1:
-                raise RuntimeError("Model expect {0} inputs".format(len(inp)))
+                raise RuntimeError(f"Model expect {len(inp)} inputs")
             inps = {inp[0].name: inputs}
             return self._session.run(None, inps, options)

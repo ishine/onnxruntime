@@ -8,9 +8,9 @@ namespace onnxruntime {
 namespace test {
 TEST(CPUExecutionProviderTest, MetadataTest) {
   CPUExecutionProviderInfo info;
-  auto provider = onnxruntime::make_unique<CPUExecutionProvider>(info);
+  auto provider = std::make_unique<CPUExecutionProvider>(info);
   EXPECT_TRUE(provider != nullptr);
-  ASSERT_STREQ(provider->GetAllocator(0, OrtMemTypeDefault)->Info().name, CPU);
+  ASSERT_EQ(provider->GetOrtDeviceByMemType(OrtMemTypeDefault).Type(), OrtDevice::CPU);
 }
 }  // namespace test
 }  // namespace onnxruntime

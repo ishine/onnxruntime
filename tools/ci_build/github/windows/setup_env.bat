@@ -1,1 +1,4 @@
-set PATH=C:\azcopy;%BUILD_BINARIESDIRECTORY%\packages\python;%BUILD_BINARIESDIRECTORY%\packages\python\DLLs;%BUILD_BINARIESDIRECTORY%\packages\python\Library\bin;%BUILD_BINARIESDIRECTORY%\packages\python\script;%PATH%
+REM Copyright (c) Microsoft Corporation. All rights reserved.
+REM Licensed under the MIT License.
+
+set GRADLE_OPTS=-Dorg.gradle.daemon=false

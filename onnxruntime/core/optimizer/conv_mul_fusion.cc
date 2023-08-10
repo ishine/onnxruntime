@@ -25,9 +25,8 @@ Status ConvMulFusion::Apply(Graph& graph, Node& node, RewriteRuleEffect& rule_ef
 
   // Conv only supports floating point data types, so can only fuse with an initializer containing those types
   if (!optimizer_utils::IsFloatingPointDataType(*conv_W_tensor_proto) ||
-      !optimizer_utils::IsFloatingPointDataType(*mul_B_tensor_proto) ||
       conv_W_tensor_proto->data_type() != mul_B_tensor_proto->data_type() ||
-      conv_W_tensor_proto->dims_size() < 4) {
+      conv_W_tensor_proto->dims_size() <= 2) {
     return Status::OK();
   }
 
@@ -53,8 +52,8 @@ Status ConvMulFusion::Apply(Graph& graph, Node& node, RewriteRuleEffect& rule_ef
     }
   }
 
-  auto conv_W = onnxruntime::make_unique<Initializer>(*conv_W_tensor_proto);
-  auto mul_B = onnxruntime::make_unique<Initializer>(*mul_B_tensor_proto);
+  Initializer conv_W{*conv_W_tensor_proto, graph.ModelPath()};
+  Initializer mul_B{*mul_B_tensor_proto, graph.ModelPath()};
 
   const ONNX_NAMESPACE::TensorProto* conv_B_tensor_proto = nullptr;
   std::unique_ptr<Initializer> conv_B = nullptr;
@@ -63,30 +62,29 @@ Status ConvMulFusion::Apply(Graph& graph, Node& node, RewriteRuleEffect& rule_ef
     conv_B_tensor_proto = graph_utils::GetConstantInitializer(graph, conv_inputs[2]->Name());
     ORT_ENFORCE(conv_B_tensor_proto);
 
-    if (!optimizer_utils::IsFloatingPointDataType(*conv_B_tensor_proto) ||
-        conv_B_tensor_proto->data_type() != mul_B_tensor_proto->data_type() ||
+    if (conv_B_tensor_proto->data_type() != mul_B_tensor_proto->data_type() ||
         conv_B_tensor_proto->dims_size() != 1 ||
         conv_B_tensor_proto->dims(0) != conv_W_tensor_proto->dims(0)) {
       return Status::OK();
     }
 
-    conv_B = onnxruntime::make_unique<Initializer>(*conv_B_tensor_proto);
+    conv_B = std::make_unique<Initializer>(*conv_B_tensor_proto, graph.ModelPath());
   }
 
   // Calculate new value of initializers of conv node
-  conv_W->scale_by_axis(*mul_B, 1);
+  conv_W.scale_by_axis(mul_B, 1);
 
-  if (conv_inputs.size() == 3) {
+  if (is_3d) {
     if (mul_B_tensor_proto->dims_size() != 0) {
-      conv_B->mul(*mul_B);
+      conv_B->mul(mul_B);
     } else {
-      conv_B->scale_by_axis(*mul_B, 0);
+      conv_B->scale_by_axis(mul_B, 0);
     }
   }
 
   // Create new initializers of conv
   ONNX_NAMESPACE::TensorProto new_conv_W_tensor_proto(*conv_W_tensor_proto);
-  conv_W->ToProto(new_conv_W_tensor_proto);
+  conv_W.ToProto(new_conv_W_tensor_proto);
 
   auto new_W_name = graph.GenerateNodeArgName("ConvMulFusion_W_" + conv_W_tensor_proto->name());
   new_conv_W_tensor_proto.set_name(new_W_name);
@@ -121,7 +119,7 @@ bool ConvMulFusion::SatisfyCondition(const Graph& graph, const Node& node, const
   }
 
   const auto& next_node = *node.OutputNodesBegin();
-  if (!graph_utils::IsSupportedOptypeVersionAndDomain(next_node, "Mul", {7}) ||
+  if (!graph_utils::IsSupportedOptypeVersionAndDomain(next_node, "Mul", {7, 13, 14}) ||
       next_node.GetInputEdgesCount() != 1 ||
       // Make sure the two nodes do not span execution providers.
       next_node.GetExecutionProviderType() != node.GetExecutionProviderType()) {
@@ -135,7 +133,7 @@ bool ConvMulFusion::SatisfyCondition(const Graph& graph, const Node& node, const
     return false;
   }
 
-  if (!graph.GetNodeOutputsInGraphOutputs(node).empty()) {
+  if (graph.NodeProducesGraphOutput(node)) {
     return false;
   }
 

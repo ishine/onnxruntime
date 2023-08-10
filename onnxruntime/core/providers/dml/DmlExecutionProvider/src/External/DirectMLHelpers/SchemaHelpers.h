@@ -50,6 +50,11 @@ namespace SchemaHelpers
         return value;
     }
 
+    inline OperatorFieldTypes::UInt64 ToOperatorFieldType(uint64_t value)
+    {
+        return value;
+    }
+
     inline OperatorFieldTypes::Int ToOperatorFieldType(int32_t value)
     {
         return value;
@@ -63,6 +68,17 @@ namespace SchemaHelpers
     inline OperatorFieldTypes::UIntArray ToOperatorFieldType(const uint32_t* values, uint32_t count)
     {
         OperatorFieldTypes::UIntArray field;
+        if (values && count != 0)
+        {
+            field.emplace(count);
+            std::copy_n(values, count, field->begin());
+        }
+        return field;
+    }
+
+    inline OperatorFieldTypes::IntArray ToOperatorFieldType(const int32_t* values, uint32_t count)
+    {
+        OperatorFieldTypes::IntArray field;
         if (values && count != 0)
         {
             field.emplace(count);
@@ -92,6 +108,10 @@ namespace SchemaHelpers
         return value;
     }
 
+    inline OperatorFieldTypes::ScalarUnion ToOperatorFieldType(DML_SCALAR_UNION value)
+    {
+        return value;
+    }
 
     class StructFieldWriter
     {
@@ -139,13 +159,13 @@ namespace SchemaHelpers
     {
         size_t dimensionCount = src.sizes.size();
 
-        auto* sizes = allocator->Allocate<UINT>(dimensionCount);
+        auto* sizes = allocator->template Allocate<UINT>(dimensionCount);
         std::copy_n(src.sizes.begin(), dimensionCount, sizes);
 
         UINT* strides = nullptr;
         if (src.strides)
         {
-            strides = allocator->Allocate<UINT>(dimensionCount);
+            strides = allocator->template Allocate<UINT>(dimensionCount);
             std::copy_n(src.strides->begin(), dimensionCount, strides);
         }
 
@@ -163,7 +183,7 @@ namespace SchemaHelpers
     template <size_t N>
     DML_TENSOR_DESC MakeTensorDesc(const DmlBufferTensorDesc& src, StackAllocator<N>* allocator)
     {
-        auto* desc = allocator->Allocate<DML_BUFFER_TENSOR_DESC>();
+        auto* desc = allocator->template Allocate<DML_BUFFER_TENSOR_DESC>();
         *desc = MakeBufferTensorDesc(src, allocator);
 
         DML_TENSOR_DESC dst;
@@ -189,7 +209,7 @@ namespace SchemaHelpers
             const auto& value = field.AsTensorDesc();
             if (value)
             {
-                desc = allocator->Allocate<DML_TENSOR_DESC>();
+                desc = allocator->template Allocate<DML_TENSOR_DESC>();
                 *desc = MakeTensorDesc(*value, allocator);
             }
 
@@ -203,7 +223,7 @@ namespace SchemaHelpers
             const auto& values = field.AsTensorDescArray();
             if (values)
             {
-                descs = allocator->Allocate<DML_TENSOR_DESC>(values->size());
+                descs = allocator->template Allocate<DML_TENSOR_DESC>(values->size());
                 for (size_t i = 0; i < values->size(); ++i)
                 {
                     descs[i] = MakeTensorDesc((*values)[i], allocator);
@@ -220,7 +240,7 @@ namespace SchemaHelpers
             const auto& value = field.AsOperatorDesc();
             if (value)
             {
-                desc = allocator->Allocate<DML_OPERATOR_DESC>();
+                desc = allocator->template Allocate<DML_OPERATOR_DESC>();
                 *desc = ConvertOperatorDesc(*value, allocator);
             }
 
@@ -234,7 +254,7 @@ namespace SchemaHelpers
             const auto& values = field.AsOperatorDescArray();
             if (values)
             {
-                descs = allocator->Allocate<DML_OPERATOR_DESC>(values->size());
+                descs = allocator->template Allocate<DML_OPERATOR_DESC>(values->size());
                 for (size_t i = 0; i < values->size(); ++i)
                 {
                     descs[i] = ConvertOperatorDesc((*values)[i], allocator);
@@ -247,6 +267,12 @@ namespace SchemaHelpers
         case DML_SCHEMA_FIELD_TYPE_UINT:
         {
             uint32_t value = field.AsUInt();
+            dst->Write(value);
+        } break;
+
+        case DML_SCHEMA_FIELD_TYPE_UINT64:
+        {
+            uint64_t value = field.AsUInt64();
             dst->Write(value);
         } break;
 
@@ -269,7 +295,21 @@ namespace SchemaHelpers
             const auto& values = field.AsUIntArray();
             if (values)
             {
-                arrayPtr = allocator->Allocate<uint32_t>(values->size());
+                arrayPtr = allocator->template Allocate<uint32_t>(values->size());
+                std::copy(values->begin(), values->end(), arrayPtr);
+            }
+
+            dst->Write(arrayPtr);
+        } break;
+
+        case DML_SCHEMA_FIELD_TYPE_INT_ARRAY:
+        {
+            int32_t* arrayPtr = nullptr;
+
+            const auto& values = field.AsIntArray();
+            if (values)
+            {
+                arrayPtr = allocator->template Allocate<int32_t>(values->size());
                 std::copy(values->begin(), values->end(), arrayPtr);
             }
 
@@ -283,7 +323,7 @@ namespace SchemaHelpers
             const auto& values = field.AsFloatArray();
             if (values)
             {
-                arrayPtr = allocator->Allocate<float>(values->size());
+                arrayPtr = allocator->template Allocate<float>(values->size());
                 std::copy(values->begin(), values->end(), arrayPtr);
             }
 
@@ -297,7 +337,7 @@ namespace SchemaHelpers
             const auto& value = field.AsScaleBias();
             if (value)
             {
-                scaleBias = allocator->Allocate<DML_SCALE_BIAS>();
+                scaleBias = allocator->template Allocate<DML_SCALE_BIAS>();
                 *scaleBias = *value;
             }
 
@@ -310,9 +350,15 @@ namespace SchemaHelpers
             dst->Write(value);
         } break;
 
+        case DML_SCHEMA_FIELD_TYPE_SCALAR_UNION:
+        {
+            uint64_t value = field.AsScalarUnion().UInt64;
+            dst->Write(value);
+        } break;
+
         default:
             assert(false);
-            THROW_HR(E_UNEXPECTED);
+            ORT_THROW_HR(E_UNEXPECTED);
         }
     }
 
@@ -328,7 +374,7 @@ namespace SchemaHelpers
         });
 
         // Allocate a blob of bytes to hold the struct
-        byte* abiDesc = allocator->Allocate<byte>(abiDescSizeInBytes);
+        byte* abiDesc = allocator->template Allocate<byte>(abiDescSizeInBytes);
 
         // Use the schema to write data into the blob
 

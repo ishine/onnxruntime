@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include <gsl/gsl>
+#include "core/common/gsl.h"
 
 #include "core/common/common.h"
 #include "core/optimizer/graph_transformer.h"
@@ -26,6 +26,7 @@ class FreeDimensionOverrideTransformer : public GraphTransformer {
   Status ApplyImpl(Graph& graph, bool& modified, int graph_level, const logging::Logger& logger) const override;
 
   std::map<std::string, int64_t> dimension_override_by_denotation_;
+  std::map<std::string, int64_t> dimension_override_by_name_;
 };
 
 }  // namespace onnxruntime

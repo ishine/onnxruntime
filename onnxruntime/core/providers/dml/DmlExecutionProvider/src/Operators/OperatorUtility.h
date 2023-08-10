@@ -7,6 +7,12 @@ namespace Dml
 {
     constexpr float DefaultEpsilon = 0.00001f;
 
+    struct ActivationOperatorDescWrapper
+    {
+        ActivationOperatorDesc desc;
+        std::vector<uint32_t> dmlAxes;
+    };
+
     namespace ActivationHelper
     {
         float GetDefaultAlpha(DML_OPERATOR_TYPE function);
@@ -41,11 +47,19 @@ namespace Dml
         bool IsFusableActivationOperator(std::string_view opType, std::string_view domain, int sinceVersion);
 
         std::optional<ActivationOperatorDesc> TryGetFusedActivationDesc(const MLOperatorKernelCreationContext& kernelInfo);
+        std::optional<ActivationOperatorDescWrapper> TryGetGraphFusedActivationDesc(const MLOperatorKernelCreationContext& kernelInfo);
 
         // Produces names for attributes added to fused kernels. This effectively prepends a string to distinguish ONNX
         // attributes from those added dynamically via operator fusion. For example, this function would be used to
         // produce the attribute for Activation in a fused Conv+Activation kernel.
         std::string GetFusedAttributeName(std::string_view name);
+
+#if _DEBUG
+        void AssertFusableOperatorSupportsVersionIfExists(
+            std::string_view type,
+            std::string_view domain,
+            int sinceVersion);
+#endif
 
     } // namespace FusionHelpers
 
@@ -55,6 +69,26 @@ namespace Dml
 
     uint32_t GetDmlAdjustedAxis(int32_t onnxAxis, uint32_t onnxDimCount, uint32_t dmlDimCount);
 
+    void GetDmlAdjustedAxes(/*inout*/ gsl::span<const int32_t> axes, uint32_t onnxDimCount, uint32_t dmlDimCount, std::vector<uint32_t>& dmlAxes);
+
+    struct NameAndIndex
+    {
+        const char* name; // Null terminated.
+        uint32_t index;
+    };
+
+    std::optional<uint32_t> TryMapStringToIndex(std::string_view mode, gsl::span<const NameAndIndex> nameAndIndexList);
+
+    template<typename T>
+    std::optional<T> TryMapStringToIndex(std::string_view mode, gsl::span<const NameAndIndex> nameAndIndexList)
+    {
+        static_assert(sizeof(T) == sizeof(uint32_t));
+        auto result = TryMapStringToIndex(mode, nameAndIndexList);
+        return *reinterpret_cast<std::optional<T>*>(std::addressof(result));
+    }
+
     DML_INTERPOLATION_MODE MapStringToInteropolationMode(std::string_view mode);
+
+    DML_DEPTH_SPACE_ORDER MapStringToDepthSpaceMode(std::string_view mode);
 
 } // namespace Dml

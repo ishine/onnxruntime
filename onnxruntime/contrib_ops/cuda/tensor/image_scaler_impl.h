@@ -10,6 +10,7 @@ namespace cuda {
 
 template <typename T>
 void ImageScalerImpl(
+    cudaStream_t stream,
     const T* input_data,
     const float scale,
     const float* bias_data,
@@ -18,5 +19,5 @@ void ImageScalerImpl(
     const size_t N);
 
 }  // namespace cuda
-}  //namespace contrib
+}  // namespace contrib
 }  // namespace onnxruntime

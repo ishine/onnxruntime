@@ -12,9 +12,17 @@ limitations under the License.
 /* Modifications Copyright (c) Microsoft. */
 
 #include "non_max_suppression.h"
-#include "non_max_suppression_helper.h"
-#include <queue>
 
+#include <queue>
+#include <utility>
+
+#include "core/common/narrow.h"
+#include "non_max_suppression_helper.h"
+
+// TODO:fix the warnings
+#ifdef _MSC_VER
+#pragma warning(disable : 4244)
+#endif
 namespace onnxruntime {
 
 ONNX_OPERATOR_VERSIONED_KERNEL_EX(
@@ -77,15 +85,15 @@ Status NonMaxSuppressionBase::PrepareCompute(OpKernelContext* ctx, PrepareContex
   ORT_RETURN_IF_NOT(boxes_shape.NumDimensions() == 3, "boxes must be a 3D tensor.");
   ORT_RETURN_IF_NOT(scores_shape.NumDimensions() == 3, "scores must be a 3D tensor.");
 
-  auto boxes_dims = boxes_shape.GetDims();
-  auto scores_dims = scores_shape.GetDims();
+  const auto& boxes_dims = boxes_shape.GetDims();
+  const auto& scores_dims = scores_shape.GetDims();
   ORT_RETURN_IF_NOT(boxes_dims[0] == scores_dims[0], "boxes and scores should have same num_batches.");
   ORT_RETURN_IF_NOT(boxes_dims[1] == scores_dims[2], "boxes and scores should have same spatial_dimension.");
   ORT_RETURN_IF_NOT(boxes_dims[2] == 4, "The most inner dimension in boxes must have 4 data.");
 
   pc.num_batches_ = boxes_dims[0];
   pc.num_classes_ = scores_dims[1];
-  pc.num_boxes_ = boxes_dims[1];
+  pc.num_boxes_ = narrow<int>(boxes_dims[1]);
 
   return Status::OK();
 }
@@ -112,15 +120,13 @@ Status NonMaxSuppressionBase::GetThresholdsFromInputs(const PrepareContext& pc,
 
 Status NonMaxSuppression::Compute(OpKernelContext* ctx) const {
   PrepareContext pc;
-  auto ret = PrepareCompute(ctx, pc);
-  ORT_RETURN_IF_NOT(ret.IsOK(), ret.ErrorMessage());
+  ORT_RETURN_IF_ERROR(PrepareCompute(ctx, pc));
 
   int64_t max_output_boxes_per_class = 0;
   float iou_threshold = .0f;
   float score_threshold = .0f;
 
-  ret = GetThresholdsFromInputs(pc, max_output_boxes_per_class, iou_threshold, score_threshold);
-  ORT_RETURN_IF_NOT(ret.IsOK(), ret.ErrorMessage());
+  ORT_RETURN_IF_ERROR(GetThresholdsFromInputs(pc, max_output_boxes_per_class, iou_threshold, score_threshold));
 
   if (0 == max_output_boxes_per_class) {
     ctx->Output(0, {0, 3});
@@ -130,70 +136,69 @@ Status NonMaxSuppression::Compute(OpKernelContext* ctx) const {
   const auto* const boxes_data = pc.boxes_data_;
   const auto* const scores_data = pc.scores_data_;
 
-  struct ScoreIndexPair {
+  struct BoxInfoPtr {
     float score_{};
     int64_t index_{};
 
-    ScoreIndexPair() = default;
-    explicit ScoreIndexPair(float score, int64_t idx) : score_(score), index_(idx) {}
-
-    bool operator<(const ScoreIndexPair& rhs) const {
-      return score_ < rhs.score_;
+    BoxInfoPtr() = default;
+    explicit BoxInfoPtr(float score, int64_t idx) : score_(score), index_(idx) {}
+    inline bool operator<(const BoxInfoPtr& rhs) const {
+      return score_ < rhs.score_ || (score_ == rhs.score_ && index_ > rhs.index_);
     }
   };
 
   const auto center_point_box = GetCenterPointBox();
 
   std::vector<SelectedIndex> selected_indices;
+  std::vector<BoxInfoPtr> selected_boxes_inside_class;
+  selected_boxes_inside_class.reserve(std::min<size_t>(static_cast<size_t>(max_output_boxes_per_class), pc.num_boxes_));
+
   for (int64_t batch_index = 0; batch_index < pc.num_batches_; ++batch_index) {
     for (int64_t class_index = 0; class_index < pc.num_classes_; ++class_index) {
       int64_t box_score_offset = (batch_index * pc.num_classes_ + class_index) * pc.num_boxes_;
-      int64_t box_offset = batch_index * pc.num_boxes_ * 4;
+      const float* batch_boxes = boxes_data + (batch_index * pc.num_boxes_ * 4);
+      std::vector<BoxInfoPtr> candidate_boxes;
+      candidate_boxes.reserve(pc.num_boxes_);
+
       // Filter by score_threshold_
-      std::priority_queue<ScoreIndexPair, std::deque<ScoreIndexPair>> sorted_scores_with_index;
       const auto* class_scores = scores_data + box_score_offset;
       if (pc.score_threshold_ != nullptr) {
         for (int64_t box_index = 0; box_index < pc.num_boxes_; ++box_index, ++class_scores) {
           if (*class_scores > score_threshold) {
-            sorted_scores_with_index.push(ScoreIndexPair(*class_scores, box_index));
+            candidate_boxes.emplace_back(*class_scores, box_index);
           }
         }
       } else {
         for (int64_t box_index = 0; box_index < pc.num_boxes_; ++box_index, ++class_scores) {
-          sorted_scores_with_index.push(ScoreIndexPair(*class_scores, box_index));
+          candidate_boxes.emplace_back(*class_scores, box_index);
         }
       }
+      std::priority_queue<BoxInfoPtr, std::vector<BoxInfoPtr>> sorted_boxes(std::less<BoxInfoPtr>(), std::move(candidate_boxes));
 
-      ScoreIndexPair next_top_score;
-      std::vector<int64_t> selected_indices_inside_class;
+      selected_boxes_inside_class.clear();
       // Get the next box with top score, filter by iou_threshold
-      while (!sorted_scores_with_index.empty()) {
-        next_top_score = sorted_scores_with_index.top();
-        sorted_scores_with_index.pop();
+      while (!sorted_boxes.empty() && static_cast<int64_t>(selected_boxes_inside_class.size()) < max_output_boxes_per_class) {
+        const BoxInfoPtr& next_top_score = sorted_boxes.top();
 
         bool selected = true;
         // Check with existing selected boxes for this class, suppress if exceed the IOU (Intersection Over Union) threshold
-        for (int64_t selected_index : selected_indices_inside_class) {
-          if (SuppressByIOU(boxes_data + box_offset, selected_index, next_top_score.index_,
-                            center_point_box, iou_threshold)) {
+        for (const auto& selected_index : selected_boxes_inside_class) {
+          if (SuppressByIOU(batch_boxes, next_top_score.index_, selected_index.index_, center_point_box, iou_threshold)) {
             selected = false;
             break;
           }
         }
 
         if (selected) {
-          if (max_output_boxes_per_class > 0 &&
-              static_cast<int64_t>(selected_indices_inside_class.size()) >= max_output_boxes_per_class) {
-            break;
-          }
-          selected_indices_inside_class.push_back(next_top_score.index_);
+          selected_boxes_inside_class.push_back(next_top_score);
           selected_indices.emplace_back(batch_index, class_index, next_top_score.index_);
         }
-      }  //while
-    }    //for class_index
-  }      //for batch_index
+        sorted_boxes.pop();
+      }  // while
+    }    // for class_index
+  }      // for batch_index
 
-  const auto last_dim = 3;
+  constexpr auto last_dim = 3;
   const auto num_selected = selected_indices.size();
   Tensor* output = ctx->Output(0, {static_cast<int64_t>(num_selected), last_dim});
   ORT_ENFORCE(output != nullptr);

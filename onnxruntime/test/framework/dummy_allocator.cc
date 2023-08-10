@@ -6,15 +6,16 @@
 namespace onnxruntime {
 namespace test {
 
-DummyAllocator::DummyAllocator() : memory_info_{kDummyAllocator, OrtAllocatorType::OrtDeviceAllocator} {
+DummyAllocator::DummyAllocator()
+    : IAllocator(OrtMemoryInfo(kDummyAllocator, OrtAllocatorType::OrtDeviceAllocator)) {
 }
 
 void* DummyAllocator::Alloc(size_t size) {
-  return malloc(size);
+  return new (std::nothrow) uint8_t[size];
 }
 
 void DummyAllocator::Free(void* p) {
-  free(p);
+  delete[] reinterpret_cast<uint8_t*>(p);
 }
 
 }  // namespace test

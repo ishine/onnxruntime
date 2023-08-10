@@ -13,10 +13,10 @@ namespace onnxruntime {
 namespace ml {
 
 template <typename T>
-class SVMRegressor final : public OpKernel, private SVMCommon<T> {
-  using SVMCommon<T>::kernel_dot;
-  using SVMCommon<T>::set_kernel_type;
-  using SVMCommon<T>::get_kernel_type;
+class SVMRegressor final : public OpKernel, private SVMCommon {
+  using SVMCommon::batched_kernel_dot;
+  using SVMCommon::get_kernel_type;
+  using SVMCommon::set_kernel_type;
 
  public:
   SVMRegressor(const OpKernelInfo& info);
@@ -24,13 +24,13 @@ class SVMRegressor final : public OpKernel, private SVMCommon<T> {
 
  private:
   bool one_class_;
-  int64_t feature_count_;
-  int64_t vector_count_;
+  ptrdiff_t feature_count_;
+  ptrdiff_t vector_count_;
   std::vector<float> rho_;
   std::vector<float> coefficients_;
   std::vector<float> support_vectors_;
   POST_EVAL_TRANSFORM post_transform_;
-  SVM_TYPE mode_;  //how are we computing SVM? 0=LibSVC, 1=LibLinear
+  SVM_TYPE mode_;  // how are we computing SVM? 0=LibSVC, 1=LibLinear
 };
 
 }  // namespace ml

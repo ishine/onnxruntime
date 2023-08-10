@@ -3,82 +3,52 @@
 
 #pragma once
 
+#ifndef SHARED_PROVIDER
 #include "core/common/common.h"
-#include "core/common/exceptions.h"
-#include "core/framework/op_node_proto_helper.h"
-#include "core/providers/cpu/nn/autopad_type.h"
+#include "core/providers/common.h"
 #include "core/util/math.h"
+#endif
+
+#include "core/common/inlined_containers.h"
+#include "core/framework/op_node_proto_helper.h"
 
 namespace onnxruntime {
 
-// helper function
-template <bool ForceSymmetricAutoPadding>
-Status ComputePadAndOutputShape(
-    const int64_t in_dim,
-    const int64_t stride,
-    const int64_t kernel,
-    const int64_t dilation,
-    AutoPadType pad_type,
-    int64_t* pad_head,
-    int64_t* pad_tail,
-    int64_t* out_dim) {
-  const int64_t dkernel = dilation * (kernel - 1) + 1;
-
-  if (pad_type == AutoPadType::NOTSET) {
-    *out_dim = static_cast<int64_t>(static_cast<float>(in_dim + *pad_head + *pad_tail - dkernel) / stride + 1);
-  } else {
-    switch (pad_type) {
-      case AutoPadType::VALID:
-        *pad_head = 0;
-        *pad_tail = 0;
-        *out_dim = (in_dim - dkernel) / stride + 1;
-        break;
-      case AutoPadType::SAME_UPPER:
-      case AutoPadType::SAME_LOWER: {
-        ORT_ENFORCE(dilation == 1, "Dilation not supported for AutoPadType::SAME_UPPER or AutoPadType::SAME_LOWER.");
-        int64_t legacy_target_size = (in_dim + stride - 1) / stride;
-        int64_t pad_needed = (legacy_target_size - 1) * stride + kernel - in_dim;
-        *out_dim = (in_dim + pad_needed - dkernel) / stride + 1;
-
-        // make sure padding is symmetric
-        if (ForceSymmetricAutoPadding)
-          pad_needed = math::roundUpPow2<int64_t, 2>(pad_needed);
-
-        if (pad_type == AutoPadType::SAME_LOWER) {
-          *pad_head = (pad_needed + 1) / 2;
-        } else {
-          *pad_head = pad_needed / 2;
-        }
-        *pad_tail = pad_needed - *pad_head;
-      } break;
-      default:
-        return Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT, "pad type not supported.");
-    }
-  }
-  return Status::OK();
-}
-
 // A helper struct holding attributes for Conv-family ops
 struct ConvAttributes {
-  explicit ConvAttributes(const OpNodeProtoHelper<ProtoHelperNodeContext>& info) {
+  using ConvPadVector = InlinedVector<int64_t, kTensorShapeSmallBufferElementsSize * 2>;
+
+  explicit ConvAttributes(const OpKernelInfo& info) {
     std::string auto_pad_str;
     auto status = info.GetAttr<std::string>("auto_pad", &auto_pad_str);
-    auto_pad = status.IsOK() ? StringToAutoPadType(auto_pad_str) : AutoPadType::NOTSET;
+    if (status.IsOK()) {
+      auto_pad = StringToAutoPadType(auto_pad_str);
+    }
 
-    kernel_shape_specified = info.GetAttrs<int64_t>("kernel_shape", kernel_shape_).IsOK();
+    kernel_shape_specified = info.GetAttrs("kernel_shape", kernel_shape_).IsOK();
 
-    status = info.GetAttrs<int64_t>("strides", strides);
-    if (!status.IsOK() || strides.empty()) {
+    status = info.GetAttrs("strides", strides);
+    if (kernel_shape_specified && (!status.IsOK() || strides.empty())) {
       strides.resize(kernel_shape_.size(), 1);
     }
 
-    status = info.GetAttrs<int64_t>("pads", pads);
+    gsl::span<const int64_t> pads_span;
+    status = info.GetAttrsAsSpan("pads", pads_span);
     if (!status.IsOK()) {
-      pads.resize(kernel_shape_.size() * 2, 0);
+      if (kernel_shape_specified) {
+        // If pads are not explicitly provided, fill the container with all zeros
+        // so that we can compute and fill in pad values downstream
+        pads.resize(kernel_shape_.size() * 2, 0);
+      }
+    } else {
+      // Pads are explicitly provided, make sure that auto_pad is NOTSET
+      ORT_ENFORCE(auto_pad == AutoPadType::NOTSET,
+                  "A Conv/ConvTranspose node has both 'auto_pad' and 'pads' attributes");
+      pads.assign(pads_span.begin(), pads_span.end());
     }
 
-    status = info.GetAttrs<int64_t>("dilations", dilations);
-    if (!status.IsOK() || dilations.empty()) {
+    status = info.GetAttrs("dilations", dilations);
+    if (kernel_shape_specified && (!status.IsOK() || dilations.empty())) {
       dilations.resize(kernel_shape_.size(), 1);
     }
 
@@ -94,16 +64,16 @@ struct ConvAttributes {
     ORT_ENFORCE(info.GetAttr<std::string>("auto_pad", &auto_pad_str).IsOK());
     auto_pad = StringToAutoPadType(auto_pad_str);
     ORT_ENFORCE(info.GetAttr<int64_t>("group", &group).IsOK());
-    ORT_ENFORCE(info.GetAttrs<int64_t>("kernel_shape", kernel_shape_).IsOK());
-    ORT_ENFORCE(info.GetAttrs<int64_t>("strides", strides).IsOK());
-    ORT_ENFORCE(info.GetAttrs<int64_t>("pads", pads).IsOK());
-    ORT_ENFORCE(info.GetAttrs<int64_t>("dilations", dilations).IsOK());
+    ORT_ENFORCE(info.GetAttrs("kernel_shape", kernel_shape_).IsOK());
+    ORT_ENFORCE(info.GetAttrs("strides", strides).IsOK());
+    ORT_ENFORCE(info.GetAttrs("pads", pads).IsOK());
+    ORT_ENFORCE(info.GetAttrs("dilations", dilations).IsOK());
 #endif
   }
 
   ~ConvAttributes() = default;
 
-  Status ComputeKernelShape(const TensorShape& weight_shape, std::vector<int64_t>& kernel_shape) const {
+  Status ComputeKernelShape(const TensorShape& weight_shape, TensorShapeVector& kernel_shape, bool weight_channels_last = false) const {
     if (kernel_shape_specified) {
       kernel_shape = kernel_shape_;
       if (kernel_shape.size() + 2 != weight_shape.NumDimensions()) {
@@ -112,34 +82,43 @@ struct ConvAttributes {
                                " W: ", weight_shape.ToString().c_str());
       }
       for (size_t i = 0; i < kernel_shape.size(); ++i) {
-        if (kernel_shape[i] != weight_shape[i + 2]) {
+        if (kernel_shape[i] != weight_shape[i + (weight_channels_last ? 1 : 2)]) {
           return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "kernel_shape is not compatible with W shape.",
                                  " kernel_shape: ", TensorShape(kernel_shape).ToString().c_str(),
-                                 " W: ", weight_shape.ToString().c_str());
+                                 " W: ", weight_shape.ToString().c_str(),
+                                 " channels_last: ", weight_channels_last);
         }
       }
     } else {
-      auto& weight_dims = weight_shape.GetDims();
-      kernel_shape = std::vector<int64_t>(weight_dims.begin() + 2, weight_dims.end());
+      auto weight_dims = weight_shape.GetDims();
+      if (weight_channels_last) {
+        kernel_shape.assign(weight_dims.begin() + 1, weight_dims.end() - 1);
+      } else {
+        kernel_shape.assign(weight_dims.begin() + 2, weight_dims.end());
+      }
     }
 
     return Status::OK();
   }
 
-  Status ValidateInputShape(const Tensor* X, const Tensor* W) const {
-    const int64_t C = X->Shape()[1];
-    const int64_t M = W->Shape()[0];
-
-    if (X->Shape().NumDimensions() != W->Shape().NumDimensions()) {
+  Status ValidateInputShape(const TensorShape& input_shape,
+                            const TensorShape& weight_shape,
+                            bool input_channels_last = false,
+                            bool weight_channels_last = false) const {
+    if (input_shape.NumDimensions() != weight_shape.NumDimensions()) {
       return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "X num_dims does not match W num_dims.",
-                             " X: ", X->Shape().ToString().c_str(),
-                             " W: ", W->Shape().ToString().c_str());
+                             " X: ", input_shape.ToString().c_str(),
+                             " W: ", weight_shape.ToString().c_str());
     }
 
-    if (C != W->Shape()[1] * group) {
+    const int64_t M = weight_shape[0];
+    const int64_t C = input_channels_last ? input_shape.GetDims().back() : input_shape[1];
+    const int64_t weight_channels = weight_channels_last ? weight_shape.GetDims().back() : weight_shape[1];
+
+    if (C != weight_channels * group) {
       return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "Input channels C is not equal to kernel channels * group.",
                              " C: ", C,
-                             " kernel channels: ", W->Shape()[1],
+                             " kernel channels: ", weight_channels,
                              " group: ", group);
     }
 
@@ -151,49 +130,206 @@ struct ConvAttributes {
     return Status::OK();
   }
 
-  template <bool ForceSymmetricAutoPadding = false>
-  Status InferOutputShape(const TensorShape& input_shape,
-                          const std::vector<int64_t>& kernel_shape,
-                          const std::vector<int64_t>& strides_p,
-                          const std::vector<int64_t>& dilations_p,
-                          std::vector<int64_t>* pads_p,
-                          std::vector<int64_t>* output_shape) const {
+  Status ValidateInputShape(const Tensor* input, const Tensor* weight) const {
+    return ValidateInputShape(input->Shape(), weight->Shape());
+  }
+
+  Status InferPadsAndOutputShape(const TensorShape& input_shape,
+                                 const gsl::span<const int64_t>& kernel_shape,
+                                 const gsl::span<const int64_t>& strides_p,
+                                 const gsl::span<const int64_t>& dilations_p,
+                                 ConvPadVector& pads_p,
+                                 TensorShapeVector& output_shape,
+                                 bool force_symmetric_auto_padding = false) const {
     size_t rank = input_shape.NumDimensions();
+
+    // Make sure all "metadata" containers have the right number of elements
+    if (rank > strides_p.size())
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,
+                             "Not enough elements in strides. Expected: ", rank, " Got: ", strides_p.size());
+
+    if (rank > kernel_shape.size())
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,
+                             "Not enough elements in kernel shape. Expected: ", rank, " Got: ", kernel_shape.size());
+
+    if (rank > dilations_p.size())
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,
+                             "Not enough elements in dilations. Expected: ", rank, " Got: ", dilations_p.size());
+
+    if ((2 * rank) > pads_p.size())
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,
+                             "Not enough elements in pads. Expected: ", (2 * rank), " Got: ", pads_p.size());
+
     for (size_t dim = 0; dim < rank; ++dim) {
-      if (dim >= strides_p.size() || dim >= kernel_shape.size() ||
-          dim >= dilations_p.size() || dim >= pads_p->size() ||
-          rank + dim >= pads_p->size()) {
-        return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "Out of bound access to array");
-      }
-      int64_t dim_size = 0;
-      ORT_RETURN_IF_ERROR(ComputePadAndOutputShape<ForceSymmetricAutoPadding>(
-          input_shape[dim],
-          strides_p[dim],
-          kernel_shape[dim],
-          dilations_p[dim],
-          auto_pad,
-          &pads_p->at(dim),
-          &pads_p->at(input_shape.NumDimensions() + dim),
-          &dim_size));
-      if (dim_size <= 0) {
+      int64_t output_dim_size = 0;
+      ORT_RETURN_IF_ERROR(ComputePadAndOutputShape(input_shape[dim],
+                                                   strides_p[dim],
+                                                   kernel_shape[dim],
+                                                   dilations_p[dim],
+                                                   auto_pad,
+                                                   pads_p[dim], pads_p[rank + dim],
+                                                   output_dim_size,
+                                                   force_symmetric_auto_padding));
+      if (output_dim_size <= 0) {
         return Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT, "Invalid input shape: " + input_shape.ToString());
       }
-      output_shape->push_back(dim_size);
+      output_shape.push_back(output_dim_size);
     }
     return Status::OK();
   }
 
-  AutoPadType auto_pad;
+  // Use this method when pads are to be made symmetrical (if they are asymmetric)
+  // and to collect metadata regarding the portion of the output (with "adjusted" pads)
+  // to be sliced off to make the output correspond to the "actual" asymmetric paddings
+  Status InferOutputShapeWithAdjustedPads(const TensorShape& input_shape,
+                                          const gsl::span<const int64_t>& kernel_shape,
+                                          const gsl::span<const int64_t>& strides_p,
+                                          const gsl::span<const int64_t>& dilations_p,
+                                          ConvPadVector& pads_p,
+                                          TensorShapeVector& output_shape,
+                                          TensorShapeVector& output_shape_with_revised_pads,
+                                          bool& post_slicing_needed,
+                                          TensorShapeVector& slice_starts,
+                                          TensorShapeVector& slice_ends,
+                                          TensorShapeVector& slice_axes,
+                                          bool channels_last = false) const {
+    size_t rank = input_shape.NumDimensions();
+    // Make sure all "metadata" containers have the right number of elements
+    if (rank > strides_p.size())
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,
+                             "Not enough elements in strides. Expected: ", rank, " Got: ", strides_p.size());
+
+    if (rank > kernel_shape.size())
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,
+                             "Not enough elements in kernel shape. Expected: ", rank, " Got: ", kernel_shape.size());
+
+    if (rank > dilations_p.size())
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,
+                             "Not enough elements in dilations. Expected: ", rank, " Got: ", dilations_p.size());
+
+    if ((2 * rank) > pads_p.size())
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,
+                             "Not enough elements in pads. Expected: ", (2 * rank), " Got: ", pads_p.size());
+
+    for (size_t dim = 0; dim < rank; ++dim) {
+      int64_t output_dim_size = 0;
+      ORT_RETURN_IF_ERROR(ComputePadAndOutputShape(input_shape[dim],
+                                                   strides_p[dim],
+                                                   kernel_shape[dim],
+                                                   dilations_p[dim],
+                                                   auto_pad,
+                                                   pads_p[dim],
+                                                   pads_p[rank + dim],
+                                                   output_dim_size));
+      if (output_dim_size <= 0) {
+        return Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT, "Invalid input shape: " + input_shape.ToString());
+      }
+
+      // This is the "actual" output shape of the Conv op (i.e.) with given pads as is
+      output_shape.push_back(output_dim_size);
+
+      // Deal with asymmetric pads if any and adjust them to be symmetric
+      // Along the way - note down how many values need to be sliced out from the start and end
+      // of each spatial dimension while we over-pad to get symmetric pads
+
+      if (pads_p[dim] == pads_p[rank + dim]) {
+        // symmetric padding - No operation as such
+        // Make note of the dim size of the output (to be used if there are other symmetrically padded dims)
+        output_shape_with_revised_pads.push_back(output_dim_size);
+      } else {
+        // asymmetric padding
+
+        int64_t& pad_head = pads_p[dim];
+        int64_t& pad_tail = pads_p[rank + dim];
+        int64_t stride = strides_p[dim];
+
+        bool head_overpadded = false;
+
+        if (pad_head < pad_tail) {
+          int64_t excess_output_head = 0;
+
+          // pad_head is under-padded, so "adjust" it by adding more padding
+          while (pad_head < pad_tail) {
+            // keep over-padding in multiples of 'strides' so that
+            // the filter slides over correctly
+
+            pad_head += stride;
+            excess_output_head += 1;  // each multiple of stride contributes to 1 excess output value
+          }
+
+          post_slicing_needed = true;
+          if (channels_last) {
+            slice_axes.push_back(static_cast<int64_t>(dim) + 1);
+          } else {
+            slice_axes.push_back(static_cast<int64_t>(dim) + 2);
+          }
+          slice_starts.push_back(excess_output_head);
+          slice_ends.push_back(excess_output_head + output_dim_size);                      // we may modify this below
+          output_shape_with_revised_pads.push_back(excess_output_head + output_dim_size);  // we may modify this below
+          head_overpadded = true;
+        }
+
+        // we may enter this section even if the head was initially under-padded,
+        // because we had to over-pad by multiples of 'stride', now `pad_head` might be > `pad_tail`
+        if (pad_tail < pad_head) {
+          pad_tail = pad_head;
+          auto revised_dim_size = ComputeOutputShape(input_shape[dim], strides_p[dim],
+                                                     kernel_shape[dim], dilations_p[dim],
+                                                     pad_head, pad_tail);
+
+          if (head_overpadded) {
+            // Head has already been over-padded
+            // Additional tail pads need not result in additional output
+            // Ensure that the size has changed - otherwise no operation needed.
+            if (revised_dim_size !=
+                output_shape_with_revised_pads[output_shape_with_revised_pads.size() - 1]) {
+              output_shape_with_revised_pads[output_shape_with_revised_pads.size() - 1] = revised_dim_size;
+            }
+          } else {
+            // Additional tail pads need not result in additional output
+            // Ensure that the size has changed - otherwise no operation needed.
+            if (revised_dim_size != output_dim_size) {
+              // Head has not been over-padded. Only tail pads need to be modified.
+              post_slicing_needed = true;
+
+              if (channels_last) {
+                slice_axes.push_back(static_cast<int64_t>(dim) + 1);
+              } else {
+                slice_axes.push_back(static_cast<int64_t>(dim) + 2);
+              }
+              slice_starts.push_back(0);
+              slice_ends.push_back(output_dim_size - revised_dim_size);
+            }
+
+            // make note of the shape of this spatial dimension
+            output_shape_with_revised_pads.push_back(revised_dim_size);
+          }
+        }
+      }
+    }
+    return Status::OK();
+  }
+
+  bool HasStridesOneAndNoPadding() const {
+    if (std::all_of(strides.begin(), strides.end(), [](int64_t v) { return v == 1; })) {
+      if (std::all_of(pads.begin(), pads.end(), [](int64_t v) { return v == 0; })) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  AutoPadType auto_pad = AutoPadType::NOTSET;
   int64_t group;
   bool kernel_shape_specified;
-  std::vector<int64_t> strides;
-  std::vector<int64_t> pads;
-  std::vector<int64_t> dilations;
+  TensorShapeVector strides;
+  ConvPadVector pads;
+  TensorShapeVector dilations;
   std::string activation;
-  float alpha;
+  float alpha = 1.0f;
 
  private:
-  std::vector<int64_t> kernel_shape_;  // must use ComputeKernelShape(...), instead of kernel_shape_
+  TensorShapeVector kernel_shape_;  // must use ComputeKernelShape(...), instead of kernel_shape_
 };
 
 }  // namespace onnxruntime

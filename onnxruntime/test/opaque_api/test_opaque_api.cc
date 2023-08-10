@@ -13,7 +13,7 @@
 #include "core/providers/cpu/cpu_execution_provider.h"
 #include "core/session/onnxruntime_cxx_api.h"
 #include "gtest/gtest.h"
-#include "onnx/defs/schema.h"
+#include "core/graph/onnx_protobuf.h"
 #include "test/providers/provider_test_utils.h"
 #include "test/framework/test_utils.h"
 
@@ -27,7 +27,7 @@ extern "C" struct ExperimentalDataContainer {
   // by the client code
   OrtValue* str_;
 };
-
+extern std::unique_ptr<Ort::Env> ort_env;
 namespace onnxruntime {
 // A new Opaque type representation
 extern const char kMsTestDomain[] = "com.microsoft.test";
@@ -107,7 +107,7 @@ class OpaqueCApiTestKernel final : public OpKernel {
 
 ONNX_OPERATOR_KERNEL_EX(
     OpaqueCApiTestKernel,
-    kMSFeaturizersDomain,
+    kMSDomain,
     1,
     kCpuExecutionProvider,
     KernelDefBuilder()
@@ -131,7 +131,7 @@ static void RegisterCustomKernel() {
   // Registry the schema
   ONNX_TEST_OPERATOR_SCHEMA(OpaqueCApiTestKernel)
       .SetDoc("Replace all of h chars to _ in the original string contained within experimental type")
-      .SetDomain(onnxruntime::kMSFeaturizersDomain)
+      .SetDomain(onnxruntime::kMSDomain)
       .SinceVersion(1)
       .Input(
           0,
@@ -153,9 +153,10 @@ static void RegisterCustomKernel() {
   // Register kernel directly to KernelRegistry
   // because we can not create custom ops with Opaque types
   // as input
-  BuildKernelCreateInfoFn fn = BuildKernelCreateInfo<ONNX_OPERATOR_KERNEL_CLASS_NAME(kCpuExecutionProvider, kMSFeaturizersDomain, 1, OpaqueCApiTestKernel)>;
+  // TODO: But that registry is process-wide, such modification is super dangerous.
+  BuildKernelCreateInfoFn fn = BuildKernelCreateInfo<ONNX_OPERATOR_KERNEL_CLASS_NAME(kCpuExecutionProvider, kMSDomain, 1, OpaqueCApiTestKernel)>;
   auto kernel_registry = CPUExecutionProvider(CPUExecutionProviderInfo()).GetKernelRegistry();
-  kernel_registry->Register(fn());
+  ORT_ENFORCE(kernel_registry->Register(fn()).IsOK());
 }
 
 namespace test {
@@ -174,12 +175,12 @@ std::string CreateModel() {
     auto& input_arg = graph.GetOrCreateNodeArg("Input", &exp_type_proto);
     inputs.push_back(&input_arg);
 
-    //Output is our custom data type. This will return an Opaque type proto
+    // Output is our custom data type. This will return an Opaque type proto
     auto& output_arg = graph.GetOrCreateNodeArg("Output", &exp_type_proto);
     outputs.push_back(&output_arg);
 
     auto& node = graph.AddNode("OpaqueCApiTestKernel", "OpaqueCApiTestKernel", "Replace all h to underscore",
-                               inputs, outputs, nullptr, onnxruntime::kMSFeaturizersDomain);
+                               inputs, outputs, nullptr, onnxruntime::kMSDomain);
     node.SetExecutionProviderType(onnxruntime::kCpuExecutionProvider);
   }
   EXPECT_TRUE(graph.Resolve().IsOK());
@@ -190,36 +191,27 @@ std::string CreateModel() {
   return serialized_model;
 }
 
-class OpaqueApiTest : public ::testing::Test {
- protected:
-  Ort::Env env_{nullptr};
-
-  void SetUp() override {
-    env_ = Ort::Env(ORT_LOGGING_LEVEL_INFO, "Default");
-  }
-};
-
-TEST_F(OpaqueApiTest, RunModelWithOpaqueInputOutput) {
+TEST(OpaqueApiTest, RunModelWithOpaqueInputOutput) {
   std::string model_str = CreateModel();
 
-  try {
+  ORT_TRY {
     // initialize session options if needed
     Ort::SessionOptions session_options;
-    Ort::Session session(env_, model_str.data(), model_str.size(), session_options);
+    Ort::Session session(*ort_env.get(), model_str.data(), model_str.size(), session_options);
 
     Ort::AllocatorWithDefaultOptions allocator;
 
     // Expecting one input
     size_t num_input_nodes = session.GetInputCount();
     EXPECT_EQ(num_input_nodes, 1U);
-    const char* input_name = session.GetInputName(0, allocator);
+    auto input_name = session.GetInputNameAllocated(0, allocator);
 
     size_t num_output_nodes = session.GetOutputCount();
     EXPECT_EQ(num_output_nodes, 1U);
-    const char* output_name = session.GetOutputName(0, allocator);
+    auto output_name = session.GetOutputNameAllocated(0, allocator);
 
-    const char* const input_names[] = {input_name};
-    const char* const output_names[] = {output_name};
+    const char* const input_names[] = {input_name.get()};
+    const char* const output_names[] = {output_name.get()};
 
     // Input
     const std::string input_string{"hi, hello, high, highest"};
@@ -266,15 +258,13 @@ TEST_F(OpaqueApiTest, RunModelWithOpaqueInputOutput) {
     str_tensor_value.GetStringTensorContent(actual_result_string.get(), str_len, &offset, 1);
     actual_result_string[str_len] = 0;
     ASSERT_EQ(expected_output.compare(actual_result_string.get()), 0);
-  } catch (const std::exception& ex) {
-    std::cerr << "Exception: " << ex.what() << std::endl;
-    ASSERT_TRUE(false);
+  }
+  ORT_CATCH(const std::exception& ex) {
+    ORT_HANDLE_EXCEPTION([&ex]() {
+      std::cerr << "Exception: " << ex.what() << std::endl;
+      ASSERT_TRUE(false);
+    });
   }
 }
 }  // namespace test
 }  // namespace onnxruntime
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

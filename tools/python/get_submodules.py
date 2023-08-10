@@ -1,15 +1,15 @@
-from operator import attrgetter
-from pathlib import Path
 import argparse
 import configparser
 import json
 import re
+from pathlib import Path
 
 import pygit2
 
 
 def format_component(submod):
     return {"component": {"type": "git", "git": {"commitHash": str(submod.head_id), "repositoryUrl": submod.url}}}
+
 
 def lookup_submodule(repo, submodule_path):
     submodule = repo.lookup_submodule(submodule_path)
@@ -23,22 +23,24 @@ def lookup_submodule(repo, submodule_path):
         # be opened by path.
         # If accessing the URL throws a RuntimeError, we get the submodule name manually from
         # .gitmodules.
-        submodule.url
+        _ = submodule.url
         return submodule
     except RuntimeError:
         pass
 
     config = configparser.ConfigParser()
-    config.read(Path(repo.workdir, '.gitmodules'))
+    config.read(Path(repo.workdir, ".gitmodules"))
     for section in config.sections():
-        if config[section]['path'] == submodule_path:
+        if config[section]["path"] == submodule_path:
             name = re.fullmatch('submodule "(.*)"', section).group(1)
             submodule = repo.lookup_submodule(name)
             return submodule
     raise NotImplementedError()  # should not be reached
 
+
 def process_component(repo):
     return [lookup_submodule(repo, submod) for submod in repo.listall_submodules()]
+
 
 def recursive_process(base_repo):
     processed_subs = []
@@ -48,13 +50,15 @@ def recursive_process(base_repo):
         submodules = process_component(repo)
         processed_subs.extend(submodules)
         repos_to_process.extend([mod.open() for mod in submodules])
-    return {"Registrations":[format_component(component) for component in processed_subs]}
+    return {"Registrations": [format_component(component) for component in processed_subs]}
+
 
 def main(repo_path, output_file):
     repo = pygit2.Repository(repo_path)
     registrations = recursive_process(repo)
-    with open(output_file, 'w') as f:
+    with open(output_file, "w") as f:
         json.dump(registrations, f, indent=4, sort_keys=True)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

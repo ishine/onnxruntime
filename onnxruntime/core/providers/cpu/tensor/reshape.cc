@@ -4,9 +4,19 @@
 #include "core/providers/cpu/tensor/reshape.h"
 namespace onnxruntime {
 
-ONNX_CPU_OPERATOR_KERNEL(
+ONNX_CPU_OPERATOR_VERSIONED_KERNEL(
+    Reshape,
+    1,
+    4,
+    KernelDefBuilder()
+        .Alias(0, 0)
+        .TypeConstraint("T", DataTypeImpl::AllTensorTypes()),
+    Reshape_1);
+
+ONNX_CPU_OPERATOR_VERSIONED_KERNEL(
     Reshape,
     5,
+    12,
     KernelDefBuilder()
         .Alias(0, 0)
         .TypeConstraint("T", DataTypeImpl::AllTensorTypes())
@@ -14,12 +24,31 @@ ONNX_CPU_OPERATOR_KERNEL(
     Reshape);
 
 ONNX_CPU_OPERATOR_VERSIONED_KERNEL(
-    Reshape_1,
-    1,
-    4,
+    Reshape,
+    13,
+    13,
     KernelDefBuilder()
         .Alias(0, 0)
-        .TypeConstraint("T", DataTypeImpl::AllTensorTypes()),
-    Reshape_1);
+        .TypeConstraint("T", DataTypeImpl::AllTensorTypes())
+        .TypeConstraint("shape", DataTypeImpl::GetTensorType<int64_t>()),
+    Reshape);
+
+ONNX_CPU_OPERATOR_VERSIONED_KERNEL(
+    Reshape,
+    14, 18,
+    KernelDefBuilder()
+        .Alias(0, 0)
+        .TypeConstraint("T", DataTypeImpl::AllTensorTypes())
+        .TypeConstraint("shape", DataTypeImpl::GetTensorType<int64_t>()),
+    Reshape);
+
+ONNX_CPU_OPERATOR_KERNEL(
+    Reshape,
+    19,
+    KernelDefBuilder()
+        .Alias(0, 0)
+        .TypeConstraint("T", DataTypeImpl::AllTensorTypesIRv9())
+        .TypeConstraint("shape", DataTypeImpl::GetTensorType<int64_t>()),
+    Reshape);
 
 }  // namespace onnxruntime

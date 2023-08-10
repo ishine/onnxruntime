@@ -3,7 +3,7 @@
 
 #include "core/codegen/common/utils.h"
 #include "core/common/cpuid_info.h"
-#include "core/common/make_unique.h"
+#include "core/common/safeint.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -31,8 +31,8 @@ std::unique_ptr<char[]> GetEnv(const char* var) {
   // to its caller and make distinguish between windows and linux, we return
   // a unique_ptr, and it will be destroyed automatically after the caller
   // completes.
-  size_t len_val = strlen(val) + 1;
-  auto p = onnxruntime::make_unique<char[]>(len_val);
+  size_t len_val = strnlen(val, onnxruntime::kMaxStrLen) + 1;
+  auto p = std::make_unique<char[]>(len_val);
   // use explicit loop to get ride of VC's warning on unsafe copy
   for (size_t i = 0; i < len_val; ++i) {
     p[i] = val[i];
@@ -46,7 +46,7 @@ bool IsEnvVarDefined(const char* var) {
 }
 
 int64_t TotalSize(const std::vector<int64_t>& shape) {
-  int64_t total = 1;
+  SafeInt<int64_t> total = 1;
   for (auto s : shape) {
     total *= s;
   }
@@ -70,9 +70,6 @@ TargetFeature GetTargetInfo(const codegen::CodeGenSettings& settings) {
   TargetFeature feature;
 
   std::string target_str = "";
-  if (settings.HasOption(nuphar::kNupharCodeGenTarget)) {
-    target_str = settings.GetOptionValue(nuphar::kNupharCodeGenTarget);
-  }
 
   bool isAVX = false;
   bool isAVX2 = false;
