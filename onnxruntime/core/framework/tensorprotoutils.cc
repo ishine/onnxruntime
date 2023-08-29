@@ -140,8 +140,8 @@ static Status GetExternalDataInfo(const ONNX_NAMESPACE::TensorProto& tensor_prot
     external_file_path = location;
   } else {
     if (tensor_proto_dir != nullptr) {
-      external_file_path = onnxruntime::ConcatPathComponent<ORTCHAR_T>(tensor_proto_dir,
-                                                                       external_data_info->GetRelPath());
+      external_file_path = onnxruntime::ConcatPathComponent(tensor_proto_dir,
+                                                            external_data_info->GetRelPath());
     } else {
       external_file_path = external_data_info->GetRelPath();
     }
@@ -1492,7 +1492,7 @@ Status UnpackInitializerData(const onnx::TensorProto& initializer,
   if (initializer.data_location() == TensorProto_DataLocation_EXTERNAL) {
     ORT_RETURN_IF_ERROR(ReadExternalDataForTensor(
         initializer,
-        model_path.IsEmpty() ? nullptr : model_path.ParentPath().ToPathString().c_str(),
+        (model_path.IsEmpty() || model_path.ParentPath().IsEmpty()) ? nullptr : model_path.ParentPath().ToPathString().c_str(),
         unpacked_tensor));
     return Status::OK();
   }
