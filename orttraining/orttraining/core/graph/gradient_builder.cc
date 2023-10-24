@@ -1848,6 +1848,14 @@ IMPLEMENT_GRADIENT_BUILDER(GetPythonOpGradient) {
               "PythonOpGrad requiring gradient output count mismatch.");
   attrs.push_back(MakeAttribute("output_tensor_requires_grads", bw_tensor_output_requires_grads));
 
+  // Copy bw_tensor_reuse_map attribute from PythonOp to PythonOpGrad if it is present.
+  auto attr_it = src_attrs.find("bw_tensor_reuse_map");
+  if (attr_it != src_attrs.end()) {
+    std::vector<int64_t> tensor_output_to_tensor_input_reuse_map(attr_it->second.ints().begin(),
+                                                                 attr_it->second.ints().end());
+    attrs.push_back(MakeAttribute("tensor_reuse_map", tensor_output_to_tensor_input_reuse_map));
+  }
+
   if (src_attrs.find("comment") != src_attrs.end() && utils::HasString(src_attrs.at("comment"))) {
     attrs.push_back(MakeAttribute("comment", src_attrs.at("comment").s()));
   }
@@ -2137,6 +2145,14 @@ IMPLEMENT_GRADIENT_BUILDER(GetScaledSumGradient) {
   }
 
   ORT_THROW("ScaledSum gradient builder does not support ", input_count, " inputs");
+}
+
+IMPLEMENT_GRADIENT_BUILDER(GetResizeGradient) {
+  return std::vector<NodeDef>{
+      NodeDef(OpDef{"ResizeGrad", kMSDomain, 1},
+              {GO(0), I(0), I(1), I(2)},
+              {GI(0)},
+              SrcNodeAttributes())};
 }
 
 }  // namespace training
