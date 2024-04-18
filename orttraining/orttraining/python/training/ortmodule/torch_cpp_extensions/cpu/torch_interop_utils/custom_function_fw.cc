@@ -181,7 +181,6 @@ py::object finalize_training_mode_forward(
   }
 
   if (kernel_info.is_first_run) {
-    std::cout << "666666666666666666666666.  py_fn->materialize_grads:" << py_fn->materialize_grads << std::endl;
     get_materialize_grads_once(forward_output_tensors, py_fn->materialize_grads, kernel_info);
 
     if (kernel_info.safe_run_enabled) {
@@ -256,7 +255,7 @@ static py::object get_mockup_context_class() {
       throw std::runtime_error("Fails to import the module.");
     }
 
-    auto python_class = py::reinterpret_steal<py::object>(PyObject_GetAttrString(module.ptr(), "FakeContext"));
+    auto python_class = PyObject_FastGetAttrString(module.ptr(), "FakeContext");
     if (!PyCallable_Check(python_class.ptr())) {
       throw std::runtime_error("Cannot instantiate the Python class");
     }

@@ -1818,16 +1818,36 @@ void Graph::ReverseDFSFrom(gsl::span<const Node* const> from,
   }
 }
 
+template <typename T>
+struct VisitorPriorityQueue {
+  using ComparatorType = std::function<bool(T, T)>;
+  std::list<T> list_;
+  const ComparatorType comparator_ = nullptr;
+  VisitorPriorityQueue(const ComparatorType& comp) : comparator_(comp) {}
+
+  void push(T node) {
+    list_.insert(
+        std::upper_bound(list_.begin(), list_.end(), node, comparator_),
+        node);
+  }
+  bool empty() { return list_.empty(); }
+  T top() { return list_.back(); }
+  void pop() { list_.pop_back(); }
+};
+
 #if !defined(ORT_MINIMAL_BUILD)
 void Graph::KahnsTopologicalSort(const std::function<void(const Node*)>& enter,
                                  const std::function<bool(const Node*, const Node*)>& comp) const {
-  std::unordered_map<NodeIndex, size_t> in_degree;
-  std::priority_queue<const Node*, std::vector<const Node*>, decltype(comp)> to_visit(comp);
-  std::vector<NodeIndex> topo_order;
+  InlinedVector<size_t> in_degree(MaxNodeIndex(), 0);
+  InlinedVector<NodeIndex> topo_order;
+  VisitorPriorityQueue<const Node*> to_visit(comp);
+
+  auto number_of_nodes = NumberOfNodes();
+  topo_order.reserve(number_of_nodes);
 
   for (auto& node : Nodes()) {
     size_t input_edge_count = node.GetInputEdgesCount();
-    in_degree.insert({node.Index(), input_edge_count});
+    in_degree[node.Index()] = input_edge_count;
     if (input_edge_count == 0) {
       to_visit.push(&node);
     }
@@ -1844,16 +1864,17 @@ void Graph::KahnsTopologicalSort(const std::function<void(const Node*)>& enter,
     }
 
     for (auto node_it = current->OutputNodesBegin(); node_it != current->OutputNodesEnd(); ++node_it) {
-      in_degree[node_it->Index()]--;
+      auto& node_in_degree = in_degree[node_it->Index()];
+      node_in_degree--;
 
-      if (in_degree[node_it->Index()] == 0) {
+      if (node_in_degree == 0) {
         to_visit.push(&*node_it);
       }
     }
     topo_order.push_back(current->Index());
   }
 
-  if (NumberOfNodes() != static_cast<int>(topo_order.size())) {
+  if (number_of_nodes != static_cast<int>(topo_order.size())) {
     ORT_THROW("Some nodes are not included in the topological sort, graph have a cycle.");
   }
 }
@@ -2367,8 +2388,14 @@ Status Graph::InferAndVerifyTypeMatch(Node& node, const OpSchema& op, const Reso
       inferred_type = existing_type;
     } else {
       // This should not happen: indicates incompleteness in ONNX inference.
+      std::stringstream ss;
+      ss << "index=" << operand_index;
+      for (auto it = op_formal_parameter.GetTypes().begin(); it != op_formal_parameter.GetTypes().end(); ++it) {
+        ss << "," << *(*it);
+      }
       Status status(ONNXRUNTIME, onnxruntime::common::StatusCode::FAIL,
-                    "Node (" + node_name + ") output arg (" + output_def->Name() + ") type inference failed");
+                    "Node (" + node_name + ") Op (" + node.OpType() + ") output arg (" +
+                        output_def->Name() + ") type inference failed, inferred types: " + ss.str());
       return status;
     }
 
@@ -2550,15 +2577,23 @@ Status Graph::VerifyNodeAndOpMatch(const ResolveOptions& options) {
     // Node verification.
     auto& node = *GetNode(node_index);
 
-    NodeProto node_proto;
-    node.ToProto(node_proto);
     const auto& node_name = node.Name();
 
     if (!node.Op()) {
       {
         auto status = Status::OK();
         ORT_TRY {
-          checker::check_node(node_proto, ctx, lsc);
+          // if this is first Graph::Resolve call, we may have a NodeProto that was set on the Node so we can skip
+          // the ToProto call.
+          if (const NodeProto* orig_node_proto = node.GetOriginalNodeProto(); orig_node_proto) {
+            checker::check_node(*orig_node_proto, ctx, lsc);
+            // clear original as we don't know if the node will be modified once the Graph::Resolve completes.
+            node.SetOriginalNodeProto(nullptr);
+          } else {
+            NodeProto node_proto;
+            node.ToProto(node_proto);
+            checker::check_node(node_proto, ctx, lsc);
+          }
         }
         ORT_CATCH(const std::exception& ex) {
           ORT_HANDLE_EXCEPTION([&]() {
@@ -2630,8 +2665,8 @@ Status Graph::VerifyNodeAndOpMatch(const ResolveOptions& options) {
     NO_CHANGE_ON_SYNC_FLAG(ORT_RETURN_IF_ERROR(InferAndVerifyTypeMatch(node, *p_op, options)));
 
     // Accumulate output names of the iterated Node
-    for (auto& output_name : node_proto.output()) {
-      lsc.output_names.insert(output_name);
+    for (const auto& output : node.OutputDefs()) {
+      lsc.output_names.insert(output->Name());
     }
   }
 
@@ -2792,11 +2827,12 @@ Status Graph::Resolve(const ResolveOptions& options) {
                 graph.GraphProtoSyncNeeded(false);
             }
 
+            // set num_resolves_ here so the graph and any subgraphs all have the same value
+            ++graph.num_resolves_;
+
             return Status::OK(); };
 
   ORT_RETURN_IF_ERROR(ForThisAndAllSubgraphs(all_subgraphs, finalize_func));
-
-  ++num_resolves_;
 
   return Status::OK();
 }
@@ -2836,7 +2872,7 @@ void Graph::AddInitializedTensor(const TensorProto& tensor) {
 
   const gsl::not_null<TensorProto*> tensor_added{graph_proto_->add_initializer()};
   *(tensor_added) = tensor;
-  name_to_initial_tensor_[tensor.name()] = tensor_added;
+  name_to_initial_tensor_.emplace(tensor.name(), tensor_added);
   SetGraphResolveNeeded();
   if (!is_loaded_from_model_file_ && GetNodeArg(tensor.name()) == nullptr) {
     // make sure there is a NodeArg for the initializer as SetGraphInputsOutputs may add it to the graph inputs.
@@ -2969,6 +3005,60 @@ Status Graph::InjectExternalInitializedTensors(const InlinedHashMap<std::string,
   }
   return Status::OK();
 }
+
+Status Graph::InjectExternalInitializersFromFilesInMemory(
+    const InlinedHashMap<PathString, std::pair<char*, size_t>>& external_initializer_files) {
+  for (const auto& [tensor_name, tensor_proto] : name_to_initial_tensor_) {
+    if (tensor_proto->data_location() == TensorProto_DataLocation_EXTERNAL) {
+      std::unique_ptr<onnxruntime::ExternalDataInfo> external_data_info;
+      ORT_RETURN_IF_ERROR(onnxruntime::ExternalDataInfo::Create(tensor_proto->external_data(), external_data_info));
+
+      const auto& external_file = external_data_info->GetRelPath();
+      onnxruntime::FileOffsetType file_offset = external_data_info->GetOffset();
+      const size_t external_data_length = external_data_info->GetLength();
+      SafeInt<size_t> tensor_byte_size;
+      ORT_RETURN_IF_ERROR(onnxruntime::utils::GetSizeInBytesFromTensorProto<0>(*tensor_proto, &tensor_byte_size));
+      ORT_RETURN_IF_NOT(external_data_length == 0 || external_data_length == tensor_byte_size,
+                        "TensorProto: ", tensor_name, " external data size mismatch. Computed size: ",
+                        *&tensor_byte_size, ", external_data.length: ", external_data_length);
+
+      SafeInt<FileOffsetType> end_of_read(file_offset);
+      end_of_read += tensor_byte_size;
+
+      auto external_file_pos = external_initializer_files.find(external_file);
+      ORT_RETURN_IF(external_file_pos == external_initializer_files.end(),
+                    "External file: ", ORT_TSTR_CONVERT_TO_PRINTABLE_STRING(external_file),
+                    " not found from the table user provided.");
+      auto external_file_length = external_file_pos->second.second;
+
+      ORT_RETURN_IF(file_offset < 0 || end_of_read > narrow<FileOffsetType>(external_file_length),
+                    "External initializer: ", tensor_name,
+                    " offset: ", file_offset, " size to read: ", external_data_length,
+                    " given file_length: ", external_file_length, " are out of bounds or can not be read in full.");
+      char* external_file_buffer = static_cast<char*>(external_file_pos->second.first);
+      char* tensor_buffer = external_file_buffer + file_offset;
+
+      const auto& old_initializer = *(tensor_proto);
+      auto& mutable_initializers = *(graph_proto_->mutable_initializer());
+      // use cheaper pointer comparison to find old entry
+      auto existing_entry = std::find(mutable_initializers.pointer_begin(), mutable_initializers.pointer_end(),
+                                      &old_initializer);
+
+      // these should always be in sync as the pointer in name_to_initial_tensor_ is to memory owned by graph_proto_
+      ORT_ENFORCE(existing_entry != mutable_initializers.pointer_end(),
+                  "graph_proto_ is not in sync with name_to_initial_tensor_");
+      (**existing_entry).clear_data_location();
+      const DataTypeImpl* const type = DataTypeImpl::TensorTypeFromONNXEnum(old_initializer.data_type())->GetElementType();
+      TensorShape tensor_shape = utils::GetTensorShapeFromTensorProto(old_initializer);
+      auto tensor = Tensor(type, tensor_shape, tensor_buffer,
+                           OrtMemoryInfo(CPU, OrtAllocatorType::OrtDeviceAllocator));
+      auto new_tensor_proto = utils::TensorToTensorProto(tensor, tensor_name);
+      **existing_entry = std::move(new_tensor_proto);
+    }
+  }
+
+  return Status::OK();
+}
 #endif  // DISABLE_EXTERNAL_INITIALIZERS
 
 #endif  // !defined(ORT_MINIMAL_BUILD)
@@ -3095,13 +3185,25 @@ Node& Graph::AddNode(const NodeProto& node_proto,
     attributes[attr.name()] = attr;
   }
 
-  return AddNode(node_proto.name(),
-                 node_proto.op_type(),
-                 node_proto.doc_string(),
-                 input_defs,
-                 output_defs,
-                 &attributes,
-                 node_proto.domain());
+  Node& new_node = AddNode(node_proto.name(),
+                           node_proto.op_type(),
+                           node_proto.doc_string(),
+                           input_defs,
+                           output_defs,
+                           &attributes,
+                           node_proto.domain());
+
+  // Perf optimization: temporarily set NodeProto in Node so we don't need to call Node::ToProto prior to
+  // calling onnx::check_node
+  // NOTE: We don't handle a node with kOnnxDomainAlias. The entry in schema_registry_ uses kOnnxDomain,
+  // and that's what onnx::check_node uses during validation.
+  // The Node ctor automatically converts kOnnxDomainAlias to kOnnxDomain to handle this.
+  // node_proto is const so we can't do the same here.
+  if (node_proto.domain() != kOnnxDomainAlias) {
+    new_node.SetOriginalNodeProto(&node_proto);
+  }
+
+  return new_node;
 }
 
 static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<flatbuffers::String>>>
