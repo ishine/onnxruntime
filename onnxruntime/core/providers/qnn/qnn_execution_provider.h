@@ -15,6 +15,9 @@
 #include <vector>
 #include <set>
 #include <unordered_map>
+#ifdef _WIN32
+#include "core/platform/windows/logging/etw_sink.h"
+#endif
 
 namespace onnxruntime {
 
@@ -77,6 +80,7 @@ class QNNExecutionProvider : public IExecutionProvider {
   std::unordered_map<std::string, std::unique_ptr<qnn::QnnModel>> qnn_models_;
   bool context_cache_enabled_ = false;
   std::string context_cache_path_cfg_ = "";
+  std::string context_node_name_prefix_ = "";
   bool disable_cpu_ep_fallback_ = false;  // True if CPU EP fallback has been disabled for this session.
   bool qnn_context_embed_mode_ = true;
   int32_t vtcm_size_in_mb_ = 0;
@@ -86,6 +90,9 @@ class QNNExecutionProvider : public IExecutionProvider {
   qnn::HtpPerformanceMode default_htp_performance_mode_ = qnn::HtpPerformanceMode::kHtpDefault;
   uint32_t default_rpc_control_latency_ = 0;
   bool enable_HTP_FP16_precision_ = false;
+#ifdef _WIN32
+  onnxruntime::logging::EtwRegistrationManager::EtwInternalCallback callback_ETWSink_provider_;
+#endif
 
   class PerThreadContext final {
    public:
