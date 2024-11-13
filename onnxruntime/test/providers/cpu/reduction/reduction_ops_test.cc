@@ -3,6 +3,7 @@
 
 #include <random>
 #include <cmath>
+#include <limits>
 #include <type_traits>
 #include "gtest/gtest.h"
 #include "test/common/dnnl_op_test_utils.h"
@@ -3175,19 +3176,26 @@ TEST(ReductionOpTest, ReduceProd0DTensor) {
   test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});
 }
 
-TEST(ReductionOpTest, ArgMax) {
+template <typename T>
+class ReductionOpTest : public ::testing::Test {
+};
+
+using ReductionOpTestTypes = ::testing::Types<float, MLFloat16>;
+TYPED_TEST_SUITE(ReductionOpTest, ReductionOpTestTypes);
+
+TYPED_TEST(ReductionOpTest, ArgMax) {
   OpTester test("ArgMax");
   test.AddAttribute("axis", (int64_t)1);
   test.AddAttribute("keepdims", (int64_t)1);
-  test.AddInput<float>("data", {3, 2, 2},
-                       {1.0f, 2.0f,
-                        3.0f, 4.0f,
+  test.AddInput<TypeParam>("data", {3, 2, 2},
+                           GetTypedArray<TypeParam>({1.0f, 2.0f,
+                                                     3.0f, 4.0f,
 
-                        5.0f, 6.0f,
-                        7.0f, 8.0f,
+                                                     5.0f, 6.0f,
+                                                     7.0f, 8.0f,
 
-                        9.0f, 10.0f,
-                        11.0f, 12.0f});
+                                                     9.0f, 10.0f,
+                                                     11.0f, 12.0f}));
   test.AddOutput<int64_t>("reduced", {3, 1, 2},
                           {1, 1,
                            1, 1,
@@ -3244,6 +3252,26 @@ TEST(ReductionOpTest, ArgMax_do_not_keepdims_2) {
   test.AddOutput<int64_t>("reduced", {},
                           {2});
   test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});  // TensorRT: node1: at least 2 dimensions are required for input
+}
+
+TEST(ReductionOpTest, ArgMax_int64) {
+  OpTester test("ArgMax", 13);
+  test.AddAttribute("axis", (int64_t)1);
+  test.AddAttribute("keepdims", (int64_t)1);
+  test.AddInput<int64_t>("data", {3, 2, 2},
+                         {1, 2,
+                          3, 4,
+
+                          5, 6,
+                          7, 8,
+
+                          9, 10,
+                          11, 12});
+  test.AddOutput<int64_t>("reduced", {3, 1, 2},
+                          {1, 1,
+                           1, 1,
+                           1, 1});
+  test.Run();
 }
 
 TEST(ReductionOpTest, ArgMax_int32) {
@@ -3308,6 +3336,41 @@ TEST(ReductionOpTest, ArgMax_int32_last_index_dups) {
                            0, 1,
                            1, 0});
   test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});
+}
+
+TEST(ReductionOpTest, ArgMax_float_first_index_random) {
+  OpTester test("ArgMax", 12);
+  test.AddAttribute("axis", static_cast<int64_t>(0));
+  test.AddAttribute("keepdims", static_cast<int64_t>(1));
+
+  // Since select_last_index is 0 by default, this test should run on both CPU and CUDA
+  test.AddAttribute("select_last_index", static_cast<int64_t>(0));
+
+  constexpr size_t vector_size = 64 * 1024;
+  constexpr float max_value = std::numeric_limits<float>::infinity();
+
+  std::random_device rd;
+  std::mt19937 generator(rd());
+  std::uniform_int_distribution<int> distribution(0, static_cast<int>(vector_size) - 1);
+
+  std::vector<float> data_vec(vector_size, 0.0f);
+
+  int min_index = -1;
+
+  // Try replace 8 elements with max_value. It is fine that some elements hit same index.
+  for (int i = 0; i < 8; ++i) {
+    int index = distribution(generator);
+    data_vec[index] = max_value;
+    if (i == 0 || index < min_index) {
+      min_index = index;
+    }
+  }
+
+  test.AddInput<float>("data", {vector_size}, data_vec);
+  test.AddOutput<int64_t>("reduced", {1}, {min_index});
+
+  // Exclude OpenVINO since it failed to handle this case.
+  test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider, kOpenVINOExecutionProvider});
 }
 
 TEST(ReductionOpTest, ArgMax_int32_neg_axis) {
@@ -3511,6 +3574,63 @@ TEST(ReductionOpTest, ArgMin_do_not_keepdims_2_select_last) {
   test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});
 }
 
+TEST(ReductionOpTest, ArgMin_uint8) {
+  OpTester test("ArgMin", 13);
+  test.AddAttribute("axis", (int64_t)0);
+  test.AddAttribute("keepdims", (int64_t)0);
+  test.AddInput<uint8_t>("data", {3, 2, 2},
+                         {1, 2,
+                          3, 4,
+
+                          5, 6,
+                          7, 8,
+
+                          9, 10,
+                          11, 12});
+  test.AddOutput<int64_t>("reduced", {2, 2},
+                          {0, 0,
+                           0, 0});
+  test.Run();
+}
+
+TEST(ReductionOpTest, ArgMin_int8) {
+  OpTester test("ArgMin", 13);
+  test.AddAttribute("axis", (int64_t)0);
+  test.AddAttribute("keepdims", (int64_t)0);
+  test.AddInput<int8_t>("data", {3, 2, 2},
+                        {1, 2,
+                         3, 4,
+
+                         5, 6,
+                         7, 8,
+
+                         9, 10,
+                         11, 12});
+  test.AddOutput<int64_t>("reduced", {2, 2},
+                          {0, 0,
+                           0, 0});
+  test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider});
+}
+
+TEST(ReductionOpTest, ArgMin_int64) {
+  OpTester test("ArgMin", 13);
+  test.AddAttribute("axis", (int64_t)0);
+  test.AddAttribute("keepdims", (int64_t)0);
+  test.AddInput<int64_t>("data", {3, 2, 2},
+                         {1, 2,
+                          3, 4,
+
+                          5, 6,
+                          7, 8,
+
+                          9, 10,
+                          11, 12});
+  test.AddOutput<int64_t>("reduced", {2, 2},
+                          {0, 0,
+                           0, 0});
+  test.Run();
+}
+
 TEST(ReductionOpTest, ArgMin_int32) {
   OpTester test("ArgMin");
   test.AddAttribute("axis", (int64_t)0);
@@ -3569,6 +3689,41 @@ TEST(ReductionOpTest, ArgMin_int32_neg_axis) {
                            0, 0});
 
   test.Run();
+}
+
+TEST(ReductionOpTest, ArgMin_float_first_index_random) {
+  OpTester test("ArgMin", 13);
+  test.AddAttribute("axis", static_cast<int64_t>(0));
+  test.AddAttribute("keepdims", static_cast<int64_t>(1));
+
+  // Since select_last_index is 0 by default, this test should run on both CPU and CUDA
+  test.AddAttribute("select_last_index", static_cast<int64_t>(0));
+
+  constexpr size_t vector_size = 64 * 1024;
+  constexpr float min_value = -std::numeric_limits<float>::infinity();
+
+  std::random_device rd;
+  std::mt19937 generator(rd());
+  std::uniform_int_distribution<int> distribution(0, static_cast<int>(vector_size) - 1);
+
+  std::vector<float> data_vec(vector_size, 0.0f);
+
+  int min_index = -1;
+
+  // Try replace 8 elements with min_value. It is fine that some elements hit same index.
+  for (int i = 0; i < 8; ++i) {
+    int index = distribution(generator);
+    data_vec[index] = min_value;
+    if (i == 0 || index < min_index) {
+      min_index = index;
+    }
+  }
+
+  test.AddInput<float>("data", {vector_size}, data_vec);
+  test.AddOutput<int64_t>("reduced", {1}, {min_index});
+
+  // Exclude OpenVINO since it failed to handle this case.
+  test.Run(OpTester::ExpectResult::kExpectSuccess, "", {kTensorrtExecutionProvider, kOpenVINOExecutionProvider});
 }
 
 TEST(ReductionOpTest, OptimizeShapeForFastReduce_ReduceDimWithZero1) {
