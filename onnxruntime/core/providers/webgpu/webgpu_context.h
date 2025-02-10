@@ -3,19 +3,20 @@
 
 #pragma once
 
-#ifdef __EMSCRIPTEN__
-#include <emscripten/emscripten.h>
-#endif
-
 #include <memory>
 #include <mutex>
 
 #include <webgpu/webgpu_cpp.h>
 
 #include "core/common/common.h"
+#include "core/framework/library_handles.h"
 #include "core/providers/webgpu/webgpu_execution_provider.h"
 #include "core/providers/webgpu/buffer_manager.h"
 #include "core/providers/webgpu/program_manager.h"
+
+#if defined(ENABLE_PIX_FOR_WEBGPU_EP)
+#include "core/providers/webgpu/webgpu_pix_frame_generator.h"
+#endif  // ENABLE_PIX_FOR_WEBGPU_EP
 
 namespace onnxruntime {
 class Tensor;
@@ -25,28 +26,53 @@ class WebGpuContext;
 class ComputeContext;
 class ProgramBase;
 
+struct WebGpuContextConfig {
+  int context_id;
+  WGPUInstance instance;
+  WGPUAdapter adapter;
+  WGPUDevice device;
+  const void* dawn_proc_table;
+  ValidationMode validation_mode;
+};
+
+struct WebGpuBufferCacheConfig {
+  struct ConfigEntry {
+    BufferCacheMode mode;
+    std::string config_string;
+  };
+  ConfigEntry storage;
+  ConfigEntry uniform;
+  ConfigEntry query_resolve;
+  ConfigEntry default_entry;
+};
+
 class WebGpuContextFactory {
  public:
-  static WebGpuContext& CreateContext(int context_id,
-                                      WGPUInstance instance,
-                                      WGPUAdapter adapter,
-                                      WGPUDevice device,
-                                      ValidationMode validation_mode);
+  struct WebGpuContextInfo {
+    std::unique_ptr<WebGpuContext> context;
+    int ref_count;
+  };
+
+  static WebGpuContext& CreateContext(const WebGpuContextConfig& config);
   static WebGpuContext& GetContext(int context_id);
+
+  static void ReleaseContext(int context_id);
 
   static void Cleanup();
 
  private:
   WebGpuContextFactory() {}
 
-  static std::unordered_map<int32_t, std::unique_ptr<WebGpuContext>> contexts_;
+  static std::unordered_map<int32_t, WebGpuContextInfo> contexts_;
   static std::mutex mutex_;
+  static std::once_flag init_default_flag_;
+  static wgpu::Instance default_instance_;
 };
 
 // Class WebGpuContext includes all necessary resources for the context.
 class WebGpuContext final {
  public:
-  void Initialize(const WebGpuExecutionProviderInfo& webgpu_ep_info, const void* dawn_proc_table);
+  void Initialize(const WebGpuBufferCacheConfig& buffer_cache_config, int backend_type, bool enable_pix_capture);
 
   Status Wait(wgpu::Future f);
 
@@ -99,7 +125,22 @@ class WebGpuContext final {
   void CollectProfilingData(profiling::Events& events);
   void EndProfiling(TimePoint, profiling::Events& events, profiling::Events& cached_events);
 
+  //
+  // Push error scope.
+  //
+  // This is useful only when "skip_validation" is not set.
+  //
+  void PushErrorScope();
+
+  //
+  // Pop error scope.
+  //
+  // This is useful only when "skip_validation" is not set.
+  //
+  Status PopErrorScope();
+
   Status Run(ComputeContext& context, const ProgramBase& program);
+  void OnRunEnd();
 
  private:
   enum class TimestampQueryType {
@@ -121,11 +162,12 @@ class WebGpuContext final {
 
   struct PendingKernelInfo {
     PendingKernelInfo(std::string_view kernel_name,
+                      std::string_view kernel_type,
                       std::string_view program_name,
                       std::string_view cache_key,
                       const std::vector<ProgramInput>& inputs,
                       const std::vector<ProgramOutput>& outputs)
-        : name{absl::StrJoin({kernel_name, program_name}, "_")}, cache_key{cache_key}, inputs{inputs}, outputs{outputs} {}
+        : name{absl::StrJoin({kernel_name, kernel_type, program_name}, "&")}, cache_key{cache_key}, inputs{inputs}, outputs{outputs} {}
 
     PendingKernelInfo(PendingKernelInfo&&) = default;
     PendingKernelInfo& operator=(PendingKernelInfo&&) = default;
@@ -152,6 +194,8 @@ class WebGpuContext final {
   friend class WebGpuContextFactory;
 
   std::once_flag init_flag_;
+
+  LibraryHandles modules_;
 
   wgpu::Instance instance_;
   wgpu::Adapter adapter_;
@@ -183,6 +227,10 @@ class WebGpuContext final {
 
   uint64_t gpu_timestamp_offset_ = 0;
   bool is_profiling_ = false;
+
+#if defined(ENABLE_PIX_FOR_WEBGPU_EP)
+  std::unique_ptr<WebGpuPIXFrameGenerator> pix_frame_generator_ = nullptr;
+#endif  // ENABLE_PIX_FOR_WEBGPU_EP
 };
 
 }  // namespace webgpu

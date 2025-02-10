@@ -250,6 +250,23 @@ static const char* const kOrtSessionOptionsOptimizedModelExternalInitializersFil
 static const char* const kOrtSessionOptionsOptimizedModelExternalInitializersMinSizeInBytes =
     "session.optimized_model_external_initializers_min_size_in_bytes";
 
+// When loading model from memory buffer and the model has external initializers
+// Use this config to set the external data file folder path
+// All external data files should be in the same folder
+static const char* const kOrtSessionOptionsModelExternalInitializersFileFolderPath =
+    "session.model_external_initializers_file_folder_path";
+
+// Use this config when saving pre-packed constant initializers to an external data file.
+// This allows you to memory map pre-packed initializers on model load and leave it to
+// to the OS the amount of memory consumed by the pre-packed initializers. Otherwise,
+// pre-packed data resides on the heap.
+//
+// - "0": Default is not save pre-packed initializers to a data file.
+// - "1": Save pre-packed constant initializers to an external data file.
+// Sample usage: sess_options.add_session_config_entry(kOrtSessionOptionsSavePrePackedConstantInitializers,  "1")
+static const char* const kOrtSessionOptionsSavePrePackedConstantInitializers =
+    "session.save_external_prepacked_constant_initializers";
+
 // Enable EP context feature to dump the partitioned graph which includes the EP context into Onnx file.
 // The dumped Onnx model with EP context can be used for future inference to avoid the EP graph partitioning/compile overhead.
 // "0": disable. (default)
@@ -258,11 +275,12 @@ static const char* const kOrtSessionOptionEpContextEnable = "ep.context_enable";
 
 // Specify the file path for the Onnx model which has EP context.
 // Default to original_file_name_ctx.onnx if not specified
+// Folder is not a valid option
 static const char* const kOrtSessionOptionEpContextFilePath = "ep.context_file_path";
 
 // Flag to specify whether to dump the EP context into the Onnx model.
-// "0": dump the EP context into separate file, keep the file name in the Onnx model.
-// "1": dump the EP context into the Onnx model. (default).
+// "0": dump the EP context into separate file, keep the file name in the Onnx model. (default).
+// "1": dump the EP context into the Onnx model.
 static const char* const kOrtSessionOptionEpContextEmbedMode = "ep.context_embed_mode";
 
 // Specify the EPContext node name prefix to make it unique
@@ -271,6 +289,11 @@ static const char* const kOrtSessionOptionEpContextNodeNamePrefix = "ep.context_
 
 // Share EP related resources across EPs
 static const char* const kOrtSessionOptionShareEpContexts = "ep.share_ep_contexts";
+
+// Use this config when dumping EP context model with an external initializers file
+// All initializers will be inside the external data file if specified, otherwise all in Onnx file
+static const char* const kOrtSessionOptionsEpContextModelExternalInitializersFileName =
+    "ep.context_model_external_initializers_file_name";
 
 // Gemm fastmath mode provides fp32 gemm acceleration with bfloat16 based matmul.
 // Option values:
