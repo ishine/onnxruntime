@@ -19,11 +19,7 @@ def get_pipeline_names():
         # windows
         "Windows ARM64 QNN CI Pipeline",
         "Windows x64 QNN CI Pipeline",
-        "Windows CPU CI Pipeline",
-        "Windows GPU CUDA CI Pipeline",
-        "Windows GPU DML CI Pipeline",
         "Windows GPU Doc Gen CI Pipeline",
-        "Windows GPU TensorRT CI Pipeline",
         "ONNX Runtime Web CI Pipeline",
         "Win_TRT_Minimal_CUDA_Test_CI",
         # linux
@@ -33,11 +29,6 @@ def get_pipeline_names():
         "Linux GPU TensorRT CI Pipeline",
         "Linux OpenVINO CI Pipeline",
         "Linux QNN CI Pipeline",
-        # mac
-        "MacOS CI Pipeline",
-        # training
-        "orttraining-linux-ci-pipeline",
-        "orttraining-linux-gpu-ci-pipeline",
         # checks
         "onnxruntime-binary-size-checks-ci-pipeline",
         # big models
@@ -48,7 +39,6 @@ def get_pipeline_names():
         "Android CI Pipeline",
         "iOS CI Pipeline",
         "ONNX Runtime React Native CI Pipeline",
-        "CoreML CI Pipeline",
         "Linux DNNL CI Pipeline",
         "Linux MIGraphX CI Pipeline",
         "Linux ROCm CI Pipeline",
@@ -79,7 +69,8 @@ def run_gh_pr_command(command: list[str], check: bool = True):
     except subprocess.CalledProcessError as cpe:
         print(cpe)
         print(cpe.stderr)
-        sys.exit(-1)
+        # Exit if debugging. Otherwise keep going as it's most likely an intermittent failure.
+        # sys.exit(-1)
 
 
 def main():

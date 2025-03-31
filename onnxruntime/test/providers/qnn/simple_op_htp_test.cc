@@ -49,7 +49,8 @@ static void RunOpTestOnCPU(const std::string& op_type,
 // index #2 don't match, which is -1.9 from 2
 //
 // If/when fixed, enable QNN EP in cpu test TensorOpTest.SpaceToDepthTest_1
-TEST_F(QnnCPUBackendTests, DISABLED_SpaceToDepth_Flaky) {
+// fixed by QNN 2.32
+TEST_F(QnnCPUBackendTests, SpaceToDepth_Flaky) {
   std::vector<float> X =
       {0.0f, 0.1f, 0.2f, 0.3f,
        1.0f, 1.1f, 1.2f, 1.3f,
@@ -73,7 +74,8 @@ TEST_F(QnnCPUBackendTests, DISABLED_SpaceToDepth_Flaky) {
 // at index #2 don't match, which is -17 from 18
 //
 // If/when fixed, enable QNN EP in cpu test TensorOpTest.SpaceToDepthTest_2
-TEST_F(QnnCPUBackendTests, DISABLED_SpaceToDepth_Flaky2) {
+// fixed by QNN 2.32
+TEST_F(QnnCPUBackendTests, SpaceToDepth_Flaky2) {
   const std::vector<float> X = {
       0., 1., 2., 3., 4., 5., 6., 7., 8., 9., 10.,
       11., 12., 13., 14., 15., 16., 17., 18., 19., 20., 21.,
@@ -297,7 +299,8 @@ TEST_F(QnnHTPBackendTests, UnaryOp_Elu) {
 // Expected val: -0.99751651287078857
 // QNN QDQ val: 6.2726154327392578 (err 7.2701320648193359)
 // CPU QDQ val: -0.99753034114837646 (err 1.3828277587890625e-05)
-TEST_F(QnnHTPBackendTests, DISABLE_UnaryOp_Elu_U16) {
+// Issue fixed in 2.30
+TEST_F(QnnHTPBackendTests, UnaryOp_Elu_U16) {
   RunQDQOpTest<uint16_t>("Elu",
                          {TestInputDef<float>({1, 2, 3}, false, GetFloatDataInRange(-10.0f, 10.0f, 6))},
                          {},
@@ -1053,7 +1056,10 @@ TEST_F(QnnHTPBackendTests, GridSample_AlignCorners) {
                          utils::MakeAttribute("mode", "bilinear"),
                          utils::MakeAttribute("padding_mode", "zeros")},
                         17,
-                        ExpectedEPNodeAssignment::All);
+                        ExpectedEPNodeAssignment::All,
+                        kOnnxDomain,
+                        false,
+                        QDQTolerance(0.008f));
 }
 
 // Test 16-bit QDQ GridSample with align corners
@@ -1115,7 +1121,8 @@ TEST_F(QnnHTPBackendTests, GridSample_U16_Nearest) {
 // Expected val: 3.212885856628418
 // QNN QDQ val: 3.1308119297027588 (err 0.08207392692565918)
 // CPU QDQ val: 3.2036216259002686 (err 0.0092642307281494141)
-TEST_F(QnnHTPBackendTests, DISABLED_GridSample_ReflectionPaddingMode) {
+// fixed by QNN 2.32
+TEST_F(QnnHTPBackendTests, GridSample_ReflectionPaddingMode) {
   RunQDQOpTest<uint8_t>("GridSample",
                         {TestInputDef<float>({1, 1, 3, 2}, false, -10.0f, 10.0f),
                          TestInputDef<float>({1, 2, 4, 2}, false, -10.0f, 10.0f)},

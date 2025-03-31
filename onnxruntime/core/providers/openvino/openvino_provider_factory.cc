@@ -14,12 +14,21 @@
 
 namespace onnxruntime {
 namespace openvino_ep {
-void ParseConfigOptions(ProviderInfo& pi, const ConfigOptions& config_options) {
-  pi.so_disable_cpu_ep_fallback = config_options.GetConfigOrDefault(kOrtSessionOptionsDisableCPUEPFallback, "0") == "1";
-  pi.so_context_enable = config_options.GetConfigOrDefault(kOrtSessionOptionEpContextEnable, "0") == "1";
-  pi.so_context_embed_mode = config_options.GetConfigOrDefault(kOrtSessionOptionEpContextEmbedMode, "0") == "1";
-  pi.so_share_ep_contexts = config_options.GetConfigOrDefault(kOrtSessionOptionShareEpContexts, "0") == "1";
-  pi.so_context_file_path = config_options.GetConfigOrDefault(kOrtSessionOptionEpContextFilePath, "");
+void ParseConfigOptions(ProviderInfo& pi) {
+  if (pi.config_options == nullptr)
+    return;
+
+  pi.so_disable_cpu_ep_fallback = pi.config_options->GetConfigOrDefault(kOrtSessionOptionsDisableCPUEPFallback, "0") == "1";
+  pi.so_context_enable = pi.config_options->GetConfigOrDefault(kOrtSessionOptionEpContextEnable, "0") == "1";
+  pi.so_context_embed_mode = pi.config_options->GetConfigOrDefault(kOrtSessionOptionEpContextEmbedMode, "0") == "1";
+  pi.so_share_ep_contexts = pi.config_options->GetConfigOrDefault(kOrtSessionOptionShareEpContexts, "0") == "1";
+  pi.so_context_file_path = pi.config_options->GetConfigOrDefault(kOrtSessionOptionEpContextFilePath, "");
+
+  if (pi.so_share_ep_contexts) {
+    ov::AnyMap map;
+    map["NPU_COMPILATION_MODE_PARAMS"] = "enable-wd-blockarg-input=true compute-layers-with-higher-precision=Sqrt,Power,ReduceSum";
+    pi.load_config["NPU"] = std::move(map);
+  }
 }
 
 void* ParseUint64(const ProviderOptions& provider_options, std::string option_name) {
@@ -45,8 +54,8 @@ bool ParseBooleanOption(const ProviderOptions& provider_options, std::string opt
   return false;
 }
 
-std::string ParseDeviceType(const ProviderOptions& provider_options, std::string option_name) {
-  const std::vector<std::string> ov_available_devices = OVCore::GetAvailableDevices();
+std::string ParseDeviceType(std::shared_ptr<OVCore> ov_core, const ProviderOptions& provider_options, std::string option_name) {
+  const std::vector<std::string> ov_available_devices = ov_core->GetAvailableDevices();
 
   std::set<std::string> ov_supported_device_types = {"CPU", "GPU",
                                                      "GPU.0", "GPU.1", "NPU"};
@@ -160,23 +169,24 @@ std::string ParsePrecision(const ProviderOptions& provider_options, std::string&
 void ParseProviderOptions([[maybe_unused]] ProviderInfo& result, [[maybe_unused]] const ProviderOptions& config_options) {}
 
 struct OpenVINOProviderFactory : IExecutionProviderFactory {
-  OpenVINOProviderFactory(ProviderInfo provider_info, SharedContext& shared_context)
+  OpenVINOProviderFactory(ProviderInfo provider_info, std::shared_ptr<SharedContext> shared_context)
       : provider_info_(std::move(provider_info)), shared_context_(shared_context) {}
 
   ~OpenVINOProviderFactory() override {}
 
   std::unique_ptr<IExecutionProvider> CreateProvider() override {
+    ParseConfigOptions(provider_info_);
     return std::make_unique<OpenVINOExecutionProvider>(provider_info_, shared_context_);
   }
 
  private:
   ProviderInfo provider_info_;
-  SharedContext& shared_context_;
+  std::shared_ptr<SharedContext> shared_context_;
 };
 
 struct ProviderInfo_OpenVINO_Impl : ProviderInfo_OpenVINO {
   std::vector<std::string> GetAvailableDevices() const override {
-    return OVCore::GetAvailableDevices();
+    return OVCore::Get()->GetAvailableDevices();
   }
 };
 
@@ -184,17 +194,24 @@ struct OpenVINO_Provider : Provider {
   void* GetInfo() override { return &info_; }
 
   std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory(const void* void_params) override {
-    // Extract the void_params into ProviderOptions and ConfigOptions
-    using ConfigBuffer = std::pair<const ProviderOptions*, const ConfigOptions&>;
-    const ConfigBuffer* buffer = reinterpret_cast<const ConfigBuffer*>(void_params);
-    const auto& provider_options = *buffer->first;
-    const auto& config_options = buffer->second;
+    if (void_params == nullptr) {
+      LOGS_DEFAULT(ERROR) << "[OpenVINO EP] Passed NULL options to CreateExecutionProviderFactory()";
+      return nullptr;
+    }
+
+    std::array<void*, 2> pointers_array = *reinterpret_cast<const std::array<void*, 2>*>(void_params);
+    const ProviderOptions provider_options = *reinterpret_cast<ProviderOptions*>(pointers_array[0]);
+    const ConfigOptions* config_options = reinterpret_cast<ConfigOptions*>(pointers_array[1]);
 
     ProviderInfo pi;
+    pi.config_options = config_options;
 
     std::string bool_flag = "";
 
-    pi.device_type = ParseDeviceType(provider_options, "device_type");
+    // Minor optimization: we'll hold an OVCore reference to ensure we don't create a new core between ParseDeviceType and
+    // (potential) SharedContext creation.
+    auto ov_core = OVCore::Get();
+    pi.device_type = ParseDeviceType(ov_core, provider_options, "device_type");
 
     if (provider_options.contains("device_id")) {
       std::string dev_id = provider_options.at("device_id").data();
@@ -323,34 +340,21 @@ struct OpenVINO_Provider : Provider {
 
     pi.disable_dynamic_shapes = ParseBooleanOption(provider_options, "disable_dynamic_shapes");
 
-    ParseConfigOptions(pi, config_options);
-
     // Always true for NPU plugin or when passed .
     if (pi.device_type.find("NPU") != std::string::npos) {
       pi.disable_dynamic_shapes = true;
     }
 
-    // Append values to config to support weight-as-inputs conversion for shared contexts
-    if (pi.so_share_ep_contexts) {
-      ov::AnyMap map;
-      map["NPU_COMPILATION_MODE_PARAMS"] = "enable-wd-blockarg-input=true compute-layers-with-higher-precision=Sqrt,Power,ReduceSum";
-      pi.load_config["NPU"] = std::move(map);
-    }
-
-    return std::make_shared<OpenVINOProviderFactory>(pi, shared_context_);
+    return std::make_shared<OpenVINOProviderFactory>(pi, SharedContext::Get());
   }
 
   void Initialize() override {
-    OVCore::Initialize();
   }
 
   void Shutdown() override {
-    backend_utils::DestroyOVTensors(shared_context_.shared_weights.metadata);
-    OVCore::Teardown();
   }
 
  private:
-  SharedContext shared_context_;
   ProviderInfo_OpenVINO_Impl info_;
 };  // OpenVINO_Provider
 

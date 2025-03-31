@@ -17,7 +17,12 @@ namespace openvino_ep {
 
 namespace fs = std::filesystem;
 
-struct SharedContext {
+class SharedContext : public WeakSingleton<SharedContext> {
+  // Keep the core alive as long as the shared SharedContext are alive.
+  std::shared_ptr<OVCore> OVCore_;
+
+ public:
+  SharedContext() : OVCore_(OVCore::Get()) {}
   struct SharedWeights {
     struct Metadata {
       struct Key {
@@ -96,6 +101,7 @@ struct ProviderInfo {
   bool so_context_embed_mode{false};       // ORT session option
   bool so_share_ep_contexts{false};        // ORT session option
   fs::path so_context_file_path{};         // ORT session option
+  const ConfigOptions* config_options{NULL};
 };
 
 // Holds context applicable to the entire EP instance.

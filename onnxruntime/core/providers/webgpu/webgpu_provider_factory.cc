@@ -106,14 +106,6 @@ std::shared_ptr<IExecutionProviderFactory> WebGpuProviderFactoryCreator::Create(
                 std::from_chars(webgpu_instance_str.data(), webgpu_instance_str.data() + webgpu_instance_str.size(), webgpu_instance).ec);
   }
 
-  size_t webgpu_adapter = 0;
-  std::string webgpu_adapter_str;
-  if (config_options.TryGetConfigEntry(kWebGpuAdapter, webgpu_adapter_str)) {
-    static_assert(sizeof(WGPUAdapter) == sizeof(size_t), "WGPUAdapter size mismatch");
-    ORT_ENFORCE(std::errc{} ==
-                std::from_chars(webgpu_adapter_str.data(), webgpu_adapter_str.data() + webgpu_adapter_str.size(), webgpu_adapter).ec);
-  }
-
   size_t webgpu_device = 0;
   std::string webgpu_device_str;
   if (config_options.TryGetConfigEntry(kWebGpuDevice, webgpu_device_str)) {
@@ -151,14 +143,33 @@ std::shared_ptr<IExecutionProviderFactory> WebGpuProviderFactoryCreator::Create(
     }
   }
 
+  std::string preserve_device_str;
+  bool preserve_device = false;
+  if (config_options.TryGetConfigEntry(kPreserveDevice, preserve_device_str)) {
+    if (preserve_device_str == kPreserveDevice_ON) {
+      preserve_device = true;
+    } else if (preserve_device_str == kPreserveDevice_OFF) {
+      preserve_device = false;
+    } else {
+      ORT_THROW("Invalid preserve device: ", preserve_device_str);
+    }
+  }
+
   webgpu::WebGpuContextConfig context_config{
       context_id,
       reinterpret_cast<WGPUInstance>(webgpu_instance),
-      reinterpret_cast<WGPUAdapter>(webgpu_adapter),
       reinterpret_cast<WGPUDevice>(webgpu_device),
       reinterpret_cast<const void*>(dawn_proc_table),
       validation_mode,
+      preserve_device,
   };
+
+  LOGS_DEFAULT(VERBOSE) << "WebGPU EP Device ID: " << context_id;
+  LOGS_DEFAULT(VERBOSE) << "WebGPU EP WGPUInstance: " << webgpu_instance;
+  LOGS_DEFAULT(VERBOSE) << "WebGPU EP WGPUDevice: " << webgpu_device;
+  LOGS_DEFAULT(VERBOSE) << "WebGPU EP DawnProcTable: " << dawn_proc_table;
+  LOGS_DEFAULT(VERBOSE) << "WebGPU EP ValidationMode: " << validation_mode;
+  LOGS_DEFAULT(VERBOSE) << "WebGPU EP PreserveDevice: " << preserve_device;
 
   //
   // STEP.3 - prepare parameters for WebGPU context initialization.
@@ -238,7 +249,7 @@ std::shared_ptr<IExecutionProviderFactory> WebGpuProviderFactoryCreator::Create(
   // STEP.4 - start initialization.
   //
 
-  // Load the Dawn library and create the WebGPU instance and adapter.
+  // Load the Dawn library and create the WebGPU instance.
   auto& context = webgpu::WebGpuContextFactory::CreateContext(context_config);
 
   // Create WebGPU device and initialize the context.

@@ -9,8 +9,8 @@
 
 // Public wrappers around internal ort interfaces (currently)
 #include "core/providers/shared_library/provider_host_api.h"
-
 #include "core/common/inlined_containers_fwd.h"
+#include "core/framework/resource_accountant.h"
 #include "core/providers/shared/common.h"
 
 #define PROVIDER_DISALLOW_ALL(TypeName)     \
@@ -105,6 +105,8 @@ using ModelMetaData = std::unordered_map<std::string, std::string>;
 using IOnnxRuntimeOpSchemaCollectionPtr = std::shared_ptr<IOnnxRuntimeOpSchemaCollection>;
 using IOnnxRuntimeOpSchemaRegistryList = std::list<IOnnxRuntimeOpSchemaCollectionPtr>;
 using InitializedTensorSet = std::unordered_map<std::string, const ONNX_NAMESPACE::TensorProto*>;
+using KeyValueConfig = std::unordered_map<std::string, std::string>;
+using SelectionFunc = std::function<std::vector<std::unique_ptr<ComputeCapability>>(const GraphViewer&, const KeyValueConfig&, const GraphOptimizerRegistry&)>;
 
 struct Node__NodeIterator {
   virtual ~Node__NodeIterator() {}
@@ -150,6 +152,10 @@ struct ConstGraphNodes_Iterator {
 #endif
 struct ProviderHost {
   virtual const OrtApiBase* OrtGetApiBase() = 0;
+
+  virtual Status GetOptimizerByName(const std::string& name,
+                                    const GraphOptimizerRegistry& graph_optimizer_registry,
+                                    SelectionFunc& selection_func) = 0;
 
   virtual void* HeapAllocate(size_t size) = 0;
   virtual void HeapFree(void*) = 0;
@@ -252,7 +258,9 @@ struct ProviderHost {
 
   // IExecutionProvider
   virtual std::vector<std::unique_ptr<ComputeCapability>> IExecutionProvider__GetCapability(const IExecutionProvider* p, const onnxruntime::GraphViewer& graph_viewer,
-                                                                                            const IExecutionProvider::IKernelLookup& kernel_lookup) = 0;
+                                                                                            const IExecutionProvider::IKernelLookup& kernel_lookup,
+                                                                                            const GraphOptimizerRegistry& graph_optimizer_registry,
+                                                                                            IResourceAccountant* resource_accountant) = 0;
 
   virtual common::Status IExecutionProvider__Compile(IExecutionProvider* p, const std::vector<IExecutionProvider::FusedNodeAndGraph>& fused_nodes_and_graphs, std::vector<NodeComputeInfo>& node_compute_funcs) = 0;
 
@@ -604,6 +612,7 @@ struct ProviderHost {
   virtual ONNX_NAMESPACE::StringStringEntryProto* FunctionProto__add_metadata_props(ONNX_NAMESPACE::FunctionProto* p) = 0;
 
   virtual void RegisterSchema(const std::string& domain, const OrtCustomOp* op) = 0;
+  virtual void DeregisterSchema(const std::string& domain, const std::string& op_type, int version) = 0;
   virtual const ONNX_NAMESPACE::OpSchema* GetSchema(const std::string& name, const int maxInclusiveVersion, const std::string& domain) = 0;
   virtual const std::string& OpSchema__inputs__GetName(const ONNX_NAMESPACE::OpSchema* p, const size_t i) = 0;
   virtual const std::string& OpSchema__inputs__GetTypeStr(const ONNX_NAMESPACE::OpSchema* p, const size_t i) = 0;
@@ -625,6 +634,8 @@ struct ProviderHost {
   virtual std::unique_ptr<ComputeCapability> ComputeCapability__construct(std::unique_ptr<IndexedSubGraph> t_sub_graph) = 0;
   virtual void ComputeCapability__operator_delete(ComputeCapability* p) = 0;
   virtual std::unique_ptr<IndexedSubGraph>& ComputeCapability__SubGraph(ComputeCapability* p) = 0;
+  virtual void ComputeCapability__copy_optimization_func(ComputeCapability* p, ComputeCapability* selection_cc) = 0;
+  virtual void ComputeCapability__add_nodes_to_optimize(ComputeCapability* p, std::unique_ptr<ComputeCapability> optimization_cc) = 0;
 
   // DataTransferManager
   virtual Status DataTransferManager__CopyTensor(const DataTransferManager* p, const Tensor& src, Tensor& dst) = 0;
@@ -659,6 +670,7 @@ struct ProviderHost {
   virtual std::unique_ptr<IndexedSubGraph> IndexedSubGraph__construct() = 0;
   virtual void IndexedSubGraph__operator_delete(IndexedSubGraph* p) = 0;
 
+  virtual const std::vector<onnxruntime::NodeIndex>& IndexedSubGraph__Nodes(const IndexedSubGraph* p) = 0;
   virtual std::vector<onnxruntime::NodeIndex>& IndexedSubGraph__Nodes(IndexedSubGraph* p) = 0;
 
   virtual void IndexedSubGraph__SetMetaDef(IndexedSubGraph* p, std::unique_ptr<IndexedSubGraph_MetaDef>&& meta_def_) = 0;
@@ -666,6 +678,8 @@ struct ProviderHost {
 
   virtual void IndexedSubGraph__SetSchemaSource(IndexedSubGraph* p, IndexedSubGraph_SourceOfSchema schema_source) = 0;
   virtual IndexedSubGraph_SourceOfSchema IndexedSubGraph__GetSchemaSource(const IndexedSubGraph* p) = 0;
+  virtual void IndexedSubGraph__SetAccountant(IndexedSubGraph* p, IResourceAccountant*) = 0;
+  virtual void IndexedSubGraph__AppendNodeCost(IndexedSubGraph* p, const ResourceCount& count) = 0;
 
   // KernelDef
   virtual void KernelDef__operator_delete(KernelDef* p) = 0;
@@ -1274,7 +1288,7 @@ struct ProviderHost {
   virtual std::unique_ptr<Model> cann__CreateModel(const GraphViewer& graph_viewer, const logging::Logger& logger) = 0;
 #endif
 
-  virtual void MurmurHash3__x86_128(const void* key, int len, uint32_t seed, void* out) = 0;
+  virtual void MurmurHash3__x86_128(const void* key, size_t len, uint32_t seed, void* out) = 0;
 
 #ifdef _WIN32
   virtual std::string ToUTF8String(const std::wstring& s) = 0;
