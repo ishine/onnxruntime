@@ -1160,6 +1160,7 @@ struct ModelCompilationOptions : detail::Base<OrtModelCompilationOptions> {
                                                                   size_t initializer_size_threshold);  ///< Wraps OrtApi::ModelCompilationOptions_SetOutputModelExternalInitializersFile
   ModelCompilationOptions& SetOutputModelBuffer(OrtAllocator* allocator, void** output_model_buffer_ptr,
                                                 size_t* output_model_buffer_size_ptr);  ///< Wraps OrtApi::ModelCompilationOptions_SetOutputModelBuffer
+  ModelCompilationOptions& SetFlags(size_t flags);                                      ///< Wraps OrtApi::ModelCompilationOptions_SetFlags
 };
 
 /** \brief Compiles an input model to generate a model with EPContext nodes that execute EP-specific kernels. Wraps OrtApi::CompileModels.
@@ -2154,6 +2155,12 @@ struct AllocatorImpl : Base<T> {
   MemoryAllocation GetAllocation(size_t size);
   void Free(void* p);
   ConstMemoryInfo GetInfo() const;
+
+  /** \brief Function that returns the statistics of the allocator.
+   *
+   * \return A pointer to a KeyValuePairs object that will be filled with the allocator statistics.
+   */
+  KeyValuePairs GetStats() const;
 };
 
 }  // namespace detail

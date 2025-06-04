@@ -132,6 +132,9 @@ if(NOT ONNX_CUSTOM_PROTOC_EXECUTABLE AND NOT onnxruntime_USE_VCPKG)
       elseif(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86")
         onnxruntime_fetchcontent_declare(protoc_binary URL ${DEP_URL_protoc_win32} URL_HASH SHA1=${DEP_SHA1_protoc_win32} EXCLUDE_FROM_ALL)
         FetchContent_Populate(protoc_binary)
+      elseif(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "ARM64")
+        onnxruntime_fetchcontent_declare(protoc_binary URL ${DEP_URL_protoc_win64} URL_HASH SHA1=${DEP_SHA1_protoc_win64} EXCLUDE_FROM_ALL)
+        FetchContent_Populate(protoc_binary)
       endif()
 
       if(protoc_binary_SOURCE_DIR)
@@ -625,7 +628,11 @@ endif()
 
 
 if (onnxruntime_USE_WEBGPU)
-  if (onnxruntime_USE_VCPKG AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+  # TODO: the following code is used to disable building Dawn using vcpkg temporarily
+  # until we figure out how to resolve the packaging pipeline failures
+  #
+  # if (onnxruntime_USE_VCPKG AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+  if (FALSE)
     # vcpkg does not support Emscripten yet
     find_package(dawn REQUIRED)
   else()
@@ -716,23 +723,14 @@ if (onnxruntime_USE_WEBGPU)
       )
     else()
       set(ONNXRUNTIME_Dawn_PATCH_COMMAND
-          # The dawn.patch contains the following changes:
+          # The dawn_destroy_buffer_on_destructor.patch contains the following changes:
           #
           # - (private) Allow WGPUBufferImpl class to destroy the buffer in the destructor
           #   In native implementation, wgpuBufferRelease will trigger the buffer destroy (if refcount decreased to 0). But
           #   in emwgpu implementation, the buffer destroy won't happen. This change adds a destructor to the buffer class
           #   to destroy the buffer when the refcount is 0 for non-external buffers.
           #
-          # - (private) Remove hard-coded CMAKE_OSX_DEPLOYMENT_TARGET in Dawn's CMake files
-          #   https://github.com/microsoft/onnxruntime/pull/23729
-          #
-          # - (private) Reduce unsafe buffer usage warning in aligned_storage.h
-          #   https://github.com/microsoft/onnxruntime/pull/24308
-          #   The patch disables the UNSAFE_BUFFER_USAGE warning around the AlignedStorage struct in aligned_storage.h. This is done
-          #   by using TINT_BEGIN_DISABLE_WARNING and TINT_END_DISABLE_WARNING macros, which helps in warnings related to unsafe buffer usage
-          #   usage when compiling the code, making the build process cleaner and faster.
-          #
-          ${Patch_EXECUTABLE} --binary --ignore-whitespace -p1 < ${PROJECT_SOURCE_DIR}/patches/dawn/dawn.patch &&
+          ${Patch_EXECUTABLE} --binary --ignore-whitespace -p1 < ${PROJECT_SOURCE_DIR}/patches/dawn/dawn_destroy_buffer_on_destructor.patch &&
 
           # The dawn_force_enable_f16_nvidia_vulkan.patch contains the following changes:
           #
