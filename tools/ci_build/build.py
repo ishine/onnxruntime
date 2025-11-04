@@ -1939,6 +1939,7 @@ def build_python_wheel(
     use_acl,
     use_armnn,
     use_dml,
+    use_webgpu,
     use_cann,
     use_azure,
     use_qnn,
@@ -1996,6 +1997,8 @@ def build_python_wheel(
             args.append("--use_armnn")
         elif use_dml:
             args.append("--wheel_name_suffix=directml")
+        elif use_webgpu:
+            args.append("--wheel_name_suffix=webgpu")
         elif use_cann:
             args.append("--use_cann")
         elif use_qnn:
@@ -2005,6 +2008,10 @@ def build_python_wheel(
                 args.append(f"--qnn_version={qnn_version}")
         elif use_azure:
             args.append("--use_azure")
+        elif wheel_name_suffix == "trt-rtx":
+            cuda_version = cuda_version or parse_cuda_version_from_json(cuda_home)
+            if cuda_version:
+                args.append(f"--cuda_version={cuda_version}")
 
         run_subprocess(args, cwd=cwd)
 
@@ -2628,6 +2635,7 @@ def main():
                 args.use_acl,
                 args.use_armnn,
                 args.use_dml,
+                args.use_webgpu,
                 args.use_cann,
                 args.use_azure,
                 args.use_qnn,
