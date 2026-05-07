@@ -1039,6 +1039,57 @@ inline std::vector<ConstEpDevice> Env::GetEpDevices() const {
   return devices;
 }
 
+inline size_t Env::GetNumHardwareDevices() const {
+  size_t num_devices = 0;
+  ThrowOnError(GetApi().GetNumHardwareDevices(p_, &num_devices));
+  return num_devices;
+}
+
+inline std::vector<ConstHardwareDevice> Env::GetHardwareDevices() const {
+  size_t num_devices = 0;
+  ThrowOnError(GetApi().GetNumHardwareDevices(p_, &num_devices));
+
+  std::vector<ConstHardwareDevice> devices;
+  if (num_devices > 0) {
+    std::vector<const OrtHardwareDevice*> device_ptrs(num_devices);
+    ThrowOnError(GetApi().GetHardwareDevices(p_, device_ptrs.data(), num_devices));
+    devices.reserve(num_devices);
+    for (size_t i = 0; i < num_devices; ++i) {
+      devices.emplace_back(device_ptrs[i]);
+    }
+  }
+
+  return devices;
+}
+
+inline DeviceEpIncompatibilityDetails Env::GetHardwareDeviceEpIncompatibilityDetails(
+    const char* ep_name, ConstHardwareDevice hw) const {
+  OrtDeviceEpIncompatibilityDetails* details = nullptr;
+  ThrowOnError(GetApi().GetHardwareDeviceEpIncompatibilityDetails(p_, ep_name, hw, &details));
+  return DeviceEpIncompatibilityDetails{details};
+}
+
+template <typename T>
+inline uint32_t detail::DeviceEpIncompatibilityDetailsImpl<T>::GetReasonsBitmask() const {
+  uint32_t reasons_bitmask = 0;
+  ThrowOnError(GetApi().DeviceEpIncompatibilityDetails_GetReasonsBitmask(this->p_, &reasons_bitmask));
+  return reasons_bitmask;
+}
+
+template <typename T>
+inline const char* detail::DeviceEpIncompatibilityDetailsImpl<T>::GetNotes() const {
+  const char* notes = nullptr;
+  ThrowOnError(GetApi().DeviceEpIncompatibilityDetails_GetNotes(this->p_, &notes));
+  return notes;
+}
+
+template <typename T>
+inline int32_t detail::DeviceEpIncompatibilityDetailsImpl<T>::GetErrorCode() const {
+  int32_t error_code = 0;
+  ThrowOnError(GetApi().DeviceEpIncompatibilityDetails_GetErrorCode(this->p_, &error_code));
+  return error_code;
+}
+
 inline Status Env::CopyTensors(const std::vector<Value>& src_tensors,
                                const std::vector<Value>& dst_tensors,
                                OrtSyncStream* stream) const {
@@ -1052,6 +1103,11 @@ inline Status Env::CopyTensors(const std::vector<Value>& src_tensors,
   const OrtValue* const* src_tensors_ptr = reinterpret_cast<const OrtValue* const*>(src_tensors.data());
   OrtValue* const* dst_tensors_ptr = reinterpret_cast<OrtValue* const*>(dst_tensors.data());
   OrtStatus* status = GetApi().CopyTensors(p_, src_tensors_ptr, dst_tensors_ptr, stream, src_tensors.size());
+  return Status(status);
+}
+
+inline Status Env::CopyTensor(const OrtValue* src_tensor, OrtValue* dst_tensor, OrtSyncStream* stream) const {
+  OrtStatus* status = GetApi().CopyTensors(p_, &src_tensor, &dst_tensor, stream, 1);
   return Status(status);
 }
 
@@ -3862,11 +3918,9 @@ inline void GraphImpl<T>::SetOutputs(std::vector<ValueInfo>& outputs) {
 }
 
 template <typename T>
-inline void GraphImpl<T>::AddInitializer(const std::string& name, Value& initializer, bool data_is_external) {
-  // Graph takes ownership of `initializer`
-  // On error the ownership is not transferred.
+inline void GraphImpl<T>::AddInitializer(const std::string& name, const Value& initializer, bool data_is_external) {
+  // Graph copies the OrtValue internally. Caller retains ownership of initializer.
   ThrowOnError(GetModelEditorApi().AddInitializerToGraph(this->p_, name.c_str(), initializer, data_is_external));
-  initializer.release();
 }
 
 template <typename T>
@@ -4169,4 +4223,5 @@ inline OpSchema GetOpSchema(const char* name, int max_inclusive_version, const c
   ThrowOnError(GetEpApi().GetOpSchema(name, max_inclusive_version, domain, &schema));
   return OpSchema{schema};
 }
+
 }  // namespace Ort

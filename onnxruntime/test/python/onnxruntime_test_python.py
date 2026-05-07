@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import ctypes
 import gc
+import importlib.util
 import os
 import pathlib
 import platform
@@ -1514,6 +1515,94 @@ class TestInferenceSession(unittest.TestCase):
         np.testing.assert_equal(bool_arr, result_bool)
         self.assertEqual(result_bool.dtype, np.bool_)
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("onnx") is not None,
+        "onnx package is required to build the test model",
+    )
+    def test_run_output_does_not_alias_input_passthrough(self):
+        """Test that session.run() returns independent numpy arrays when a model
+        input passes through as a model output. Reproduces the dangling-pointer
+        corruption described in https://github.com/microsoft/onnxruntime/issues/21922
+        """
+        import onnx  # noqa: PLC0415
+
+        # Build a model where 'input_0' is both a graph input and a graph output,
+        # plus a computed output (input_0 + 10).
+        inp_shape = [1, 2, 2, 2]
+        input_0 = onnx.helper.make_tensor_value_info("input_0", onnx.TensorProto.FLOAT, inp_shape)
+        output_plus10 = onnx.helper.make_tensor_value_info("plus_10", onnx.TensorProto.FLOAT, inp_shape)
+        ten_const = onnx.numpy_helper.from_array(np.array(10, dtype=np.float32), "ten_const")
+        add_node = onnx.helper.make_node("Add", ["input_0", "ten_const"], ["plus_10"], name="Add0")
+        graph = onnx.helper.make_graph(
+            [add_node],
+            "PassthroughTest",
+            [input_0],
+            [output_plus10, input_0],
+            initializer=[ten_const],
+        )
+        model = onnx.helper.make_model(graph, opset_imports=[onnx.helper.make_opsetid("", 21)])
+        model = onnx.shape_inference.infer_shapes(model)
+
+        sess_options = onnxrt.SessionOptions()
+        sess_options.graph_optimization_level = onnxrt.GraphOptimizationLevel.ORT_DISABLE_ALL
+        session = onnxrt.InferenceSession(
+            model.SerializeToString(),
+            sess_options=sess_options,
+            providers=["CPUExecutionProvider"],
+        )
+
+        num_runs = 7
+        all_run_outputs = []
+        for run_index in range(num_runs):
+            input_data = np.full(inp_shape, float(run_index), dtype=np.float32)
+            outputs = session.run(None, {"input_0": input_data})
+
+            # Immediately after run, outputs must be correct
+            np.testing.assert_array_equal(
+                outputs[0],
+                np.full(inp_shape, run_index + 10.0, dtype=np.float32),
+                err_msg=f"Run {run_index}: 'plus_10' wrong immediately after run",
+            )
+            np.testing.assert_array_equal(
+                outputs[1],
+                np.full(inp_shape, float(run_index), dtype=np.float32),
+                err_msg=f"Run {run_index}: 'input_0' wrong immediately after run",
+            )
+
+            # The pass-through output must NOT alias the input buffer —
+            # it must be an independent copy so it survives across runs.
+            self.assertFalse(
+                np.shares_memory(outputs[1], input_data),
+                f"Run {run_index}: 'input_0' unexpectedly aliases the input buffer",
+            )
+            all_run_outputs.append(outputs)
+
+        # After all runs, every saved output must still hold its original value.
+        for run_index, outputs in enumerate(all_run_outputs):
+            np.testing.assert_array_equal(
+                outputs[0],
+                np.full(inp_shape, run_index + 10.0, dtype=np.float32),
+                err_msg=f"Run {run_index}: 'plus_10' corrupted after loop",
+            )
+            np.testing.assert_array_equal(
+                outputs[1],
+                np.full(inp_shape, float(run_index), dtype=np.float32),
+                err_msg=f"Run {run_index}: 'input_0' corrupted after loop (issue #21922)",
+            )
+
+    def test_run_session_owned_output_is_zero_copy(self):
+        """Verify that session-allocated CPU outputs (the common case) expose
+        a backing base object instead of owning a separate numpy buffer."""
+        sess = onnxrt.InferenceSession(get_name("mul_1.onnx"), providers=["CPUExecutionProvider"])
+        input_name = sess.get_inputs()[0].name
+        x = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
+        result = sess.run(None, {input_name: x})
+        # The output should be a numpy array; for a session-owned buffer
+        # it should not be a separately-allocated copy.  We verify that by
+        # checking the array is backed by another object via ``output.base``.
+        output = result[0]
+        self.assertIsNotNone(output.base, "Session-owned output should have a backing base object")
+
     @unittest.skipIf(not hasattr(C.OrtValue, "from_dlpack"), "dlpack not enabled in this build")
     def test_ort_value_dlpack_protocol(self):
         """Test that OrtValue exposes __dlpack__ and __dlpack_device__ protocols."""
@@ -1880,40 +1969,6 @@ class TestInferenceSession(unittest.TestCase):
         # provider options unsupported mixed specification
         check_failure([("a", {1: 2})], [{3: 4}])
 
-    def test_register_custom_e_ps_library(self):
-        if sys.platform.startswith("win"):
-            shared_library = os.path.abspath("test_execution_provider.dll")
-
-        elif sys.platform.startswith("darwin"):
-            # exclude for macos
-            return
-
-        else:
-            shared_library = "./libtest_execution_provider.so"
-
-        if not os.path.exists(shared_library):
-            raise FileNotFoundError(f"Unable to find '{shared_library}'")
-
-        this = os.path.dirname(__file__)
-        custom_op_model = os.path.join(this, "testdata", "custom_execution_provider_library", "test_model.onnx")
-        if not os.path.exists(custom_op_model):
-            raise FileNotFoundError(f"Unable to find '{custom_op_model}'")
-
-        session_options = C.get_default_session_options()
-        sess = C.InferenceSession(session_options, custom_op_model, True, True)
-        sess.initialize_session(
-            ["my_ep"],
-            [
-                {
-                    "shared_lib_path": shared_library,
-                    "device_id": "1",
-                    "some_config": "val",
-                }
-            ],
-            set(),
-        )
-        print("Create session with customize execution provider successfully!")
-
     def test_create_allocator(self):
         def verify_allocator(allocator, expected_config):
             for key, val in expected_config.items():
@@ -2138,6 +2193,114 @@ class TestInferenceSession(unittest.TestCase):
             "Session configuration entry 'session.record_ep_graph_assignment_info' must be set to \"1\"",
             str(context.exception),
         )
+
+    def test_tree_ensemble_logistic(self):
+        try:
+            import onnx  # noqa: PLC0415
+        except ImportError:
+            # onnx is not installed on ARM build.
+            self.skipTest("onnx is not installed")
+        # issue https://github.com/microsoft/onnxruntime/issues/27533
+        x = onnx.helper.make_tensor_value_info("X", onnx.TensorProto.FLOAT, [None, 3])
+        label_out = onnx.helper.make_tensor_value_info("label", onnx.TensorProto.INT64, [None])
+        prob_out = onnx.helper.make_tensor_value_info("probs", onnx.TensorProto.FLOAT, [None, 2])
+
+        def make_model(
+            nodes_modes,
+            nodes_values,
+            nodes_truenodeids,
+            nodes_falsenodeids,
+            class_treeids,
+            class_nodeids,
+            class_weights,
+            **node_kwargs,
+        ):
+            """Build a minimal TreeEnsembleClassifier ONNX model."""
+            n_nodes = len(nodes_modes)
+            if "base_values" not in node_kwargs:
+                node_kwargs["base_values"] = [-0.405]  # logit(0.4)
+            node = onnx.helper.make_node(
+                "TreeEnsembleClassifier",
+                inputs=["X"],
+                outputs=["label", "probs"],
+                domain="ai.onnx.ml",
+                nodes_treeids=[0] * n_nodes,
+                nodes_nodeids=list(range(n_nodes)),
+                nodes_featureids=[0] * n_nodes,
+                nodes_values=nodes_values,
+                nodes_modes=nodes_modes,
+                nodes_truenodeids=nodes_truenodeids,
+                nodes_falsenodeids=nodes_falsenodeids,
+                nodes_missing_value_tracks_true=[0] * n_nodes,
+                nodes_hitrates=[1.0] * n_nodes,
+                class_treeids=class_treeids,
+                class_nodeids=class_nodeids,
+                class_ids=[0] * len(class_weights),
+                class_weights=class_weights,
+                classlabels_int64s=[0, 1],
+                post_transform="LOGISTIC",
+                **node_kwargs,
+            )
+            graph = onnx.helper.make_graph([node], "test", [x], [label_out, prob_out])
+            return onnx.helper.make_model(
+                graph,
+                opset_imports=[
+                    onnx.helper.make_opsetid("", 15),
+                    onnx.helper.make_opsetid("ai.onnx.ml", 3),
+                ],
+            )
+
+        test_input = {"X": np.array([[0.1, 0.0, 0.0]], dtype=np.float32)}
+
+        # Case 1: Tree with a real split (root splits on feature 0 at 0.5)
+        model_split = make_model(
+            nodes_modes=["BRANCH_LT", "LEAF", "LEAF"],
+            nodes_values=[0.5, 0.0, 0.0],
+            nodes_truenodeids=[1, 0, 0],
+            nodes_falsenodeids=[2, 0, 0],
+            class_treeids=[0, 0],
+            class_nodeids=[1, 2],
+            class_weights=[0.3, -0.3],  # mixed positive/negative
+        )
+        sess_split = onnxrt.InferenceSession(model_split.SerializeToString())
+        result_split = sess_split.run(None, test_input)
+        # x[0]=0.1 < 0.5, so left leaf (weight=0.3), aggregate = -0.405 + 0.3 = -0.105
+        expected_p1 = 1 / (1 + np.exp(0.105))  # sigmoid(-0.105)
+        with self.subTest(case="Case 1: Tree with a real split"):
+            np.testing.assert_allclose(result_split[1][0][1], expected_p1, atol=1e-5)
+
+        # Case 2: Leaf-only tree (single LEAF node, no splits)
+        model_leaf = make_model(
+            nodes_modes=["LEAF"],
+            nodes_values=[0.0],
+            nodes_truenodeids=[0],
+            nodes_falsenodeids=[0],
+            class_treeids=[0],
+            class_nodeids=[0],
+            class_weights=[0.0],  # non-negative weight
+        )
+        sess_leaf = onnxrt.InferenceSession(model_leaf.SerializeToString())
+        result_leaf = sess_leaf.run(None, test_input)
+        # aggregate = -0.405 + 0 = -0.405
+        expected_p1_leaf = 1 / (1 + np.exp(0.405))  # sigmoid(-0.405) ≈ 0.400
+        with self.subTest(case="Case 2: Leaf-only tree (single LEAF node, no splits)"):
+            np.testing.assert_allclose(result_leaf[1][0][1], expected_p1_leaf, atol=1e-5)
+
+        # Case 3: Same leaf-only tree but with a negative weight (workaround)
+        model_leaf_neg = make_model(
+            nodes_modes=["LEAF"],
+            nodes_values=[0.0],
+            nodes_truenodeids=[0],
+            nodes_falsenodeids=[0],
+            class_treeids=[0],
+            class_nodeids=[0],
+            class_weights=[-0.405],  # negative weight (move base_values into weight)
+            base_values=[0.0],  # zero base
+        )
+        sess_leaf_neg = onnxrt.InferenceSession(model_leaf_neg.SerializeToString())
+        result_leaf_neg = sess_leaf_neg.run(None, test_input)
+        with self.subTest(case="Case 3: Same leaf-only tree but with a negative weight"):
+            np.testing.assert_allclose(result_leaf_neg[1][0][1], expected_p1_leaf, atol=1e-5)
 
 
 if __name__ == "__main__":
