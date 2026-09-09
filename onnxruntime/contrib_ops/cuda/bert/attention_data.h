@@ -106,45 +106,6 @@ struct AttentionData {
   }
 };
 
-template <typename T>
-struct PackedAttentionData {
-  T* gemm_buffer;
-  const T* bias;
-  const T* attention_bias;
-  const int32_t* token_offset;
-  const int32_t* cumulative_sequence_length;
-
-  T* workspace;
-  T* output;
-
-  void* fused_runner;
-
-  bool use_memory_efficient_attention;
-};
-
-template <typename T>
-struct PackedMultiHeadAttentionData {
-  const T* query;
-  const T* key;
-  const T* value;
-  const T* bias;
-  const T* attention_bias;
-
-  const int32_t* token_offset;
-  const int32_t* cumulative_sequence_length;
-
-  AttentionQkvFormat source_qkv_format;
-
-  bool no_qkv_workspace;
-  T* workspace;
-  T* output;
-
-  void* fused_runner;
-
-  bool use_flash_attention;
-  bool use_memory_efficient_attention;
-};
-
 template <typename T, typename U>
 struct GroupQueryAttentionData {
   // Input Tensors
@@ -324,7 +285,7 @@ struct PagedAttentionData {
   int num_splits = 1;
 
   // Paged XQA decode workspaces. Only allocated when the XQA decode backend is selected
-  // (quantized cache, one new token per sequence -- see use_xqa_decode).
+  // (quantized cache with one or a bounded speculative group of new tokens -- see use_xqa_decode).
   //   xqa_workspace          : XQA semaphores + multi-block scratch (GetXQAScratchSize bytes).
   //   xqa_page_table_scratch : mutable destination for expansion when block_size is greater than 128.
   //   xqa_query              : scratch for Q pre-scaled by a PER_CHANNEL k_scale; unused otherwise.
@@ -334,6 +295,7 @@ struct PagedAttentionData {
   int* xqa_page_table_scratch = nullptr;
   T* xqa_query = nullptr;
   float* xqa_head_sink = nullptr;
+  uint32_t* xqa_spec_dec_mask = nullptr;
 
   // Output Tensors
   T* output = nullptr;
@@ -348,6 +310,7 @@ struct PagedAttentionData {
   // magnitude faster than the generic decode kernel on a quantized cache. Takes precedence over
   // use_paged_decode when set.
   bool use_xqa_decode = false;
+  bool use_xqa_spec_dec = false;
 };
 
 }  // namespace cuda
